@@ -3,11 +3,10 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 from urllib.parse import urlparse, parse_qs
-import time
 
 # Configuración de la página
 st.set_page_config(
-    page_title="Sistema de Análisis de Precios por Hoja",
+    page_title="Sistema de Análisis de Precios por Fecha",
     page_icon="💰",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -22,7 +21,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Título de la aplicación
-st.title("💰 Sistema de Análisis de Precios por Hoja Diaria")
+st.title("💰 Sistema de Análisis de Precios por Fecha")
 
 # URLs de las hojas de cálculo
 SHEET_URLS = {
@@ -30,26 +29,30 @@ SHEET_URLS = {
     "Tuxtla": "https://docs.google.com/spreadsheets/d/1Stux8hR4IlZ879gL7TRbz3uKzputDVwR362VINUr5Ho/edit?gid=1168578915#gid=1168578915"
 }
 
+# Mapeo de fechas a GIDs (debes completar con tus GIDs reales)
+FECHAS_GIDS = {
+    "2024-01-01": "1252923180",
+    "2024-01-02": "1168578915",
+    "2024-01-03": "1234567890",
+    "2024-01-04": "0987654321",
+    "2024-01-05": "1122334455",
+    # Agrega aquí todas tus fechas y GIDs correspondientes
+}
+
 # Función para convertir URL de Google Sheets a formato CSV de exportación
-def convert_google_sheet_url(url, gid=None):
+def convert_google_sheet_url(url, gid):
     parsed_url = urlparse(url)
     path_parts = parsed_url.path.split('/')
     d_index = path_parts.index('d') if 'd' in path_parts else -1
     
     if d_index != -1 and len(path_parts) > d_index + 1:
         sheet_id = path_parts[d_index + 1]
-        
-        # Obtener el gid de los parámetros de consulta si no se proporciona
-        if gid is None:
-            query_params = parse_qs(parsed_url.query)
-            gid = query_params.get('gid', ['0'])[0]
-        
         return f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
     return None
 
 # Función para cargar datos desde Google Sheets
 @st.cache_data(ttl=3600)  # Cachear datos por 1 hora
-def load_data(url, gid=None):
+def load_data(url, gid):
     csv_url = convert_google_sheet_url(url, gid)
     if csv_url:
         try:
@@ -59,24 +62,14 @@ def load_data(url, gid=None):
             return None
     return None
 
-# Función para simular la detección de hojas disponibles (esto deberías adaptarlo a tu estructura real)
-def obtener_hojas_disponibles():
-    # Simulamos hojas para los últimos 7 días
-    hoy = datetime.now()
-    hojas = []
-    
-    for i in range(7):
-        fecha = hoy - timedelta(days=i)
-        hojas.append({
-            "nombre": f"Hoja {fecha.strftime('%Y-%m-%d')}",
-            "fecha": fecha.date(),
-            "gid": str(1000 + i)  # Esto es un ejemplo, debes usar los gid reales
-        })
-    
-    return hojas
+# Función para obtener las fechas disponibles
+def obtener_fechas_disponibles():
+    # Ordenar las fechas de más reciente a más antigua
+    fechas = sorted([datetime.strptime(f, "%Y-%m-%d") for f in FECHAS_GIDS.keys()], reverse=True)
+    return [f.strftime("%Y-%m-%d") for f in fechas]
 
 # Selector de ubicación en la página principal
-st.subheader("Selecciona la ubicación:")
+st.subheader("📍 Selecciona la ubicación:")
 ubicacion = st.radio(
     "Ubicación:",
     ["Mérida", "Tuxtla"],
@@ -85,33 +78,41 @@ ubicacion = st.radio(
     key="ubicacion_selector"
 )
 
-# Obtener hojas disponibles
-hojas_disponibles = obtener_hojas_disponibles()
-hojas_nombres = [hoja["nombre"] for hoja in hojas_disponibles]
+# Obtener fechas disponibles
+fechas_disponibles = obtener_fechas_disponibles()
 
-# Selector de hoja
-st.subheader("Selecciona la hoja:")
-hoja_seleccionada_nombre = st.selectbox(
-    "Hoja:",
-    options=hojas_nombres,
-    index=0,  # Mostrar la primera hoja (más reciente) por defecto
-    key="hoja_selector"
+if not fechas_disponibles:
+    st.error("No hay fechas disponibles. Configura el mapeo de FECHAS_GIDS.")
+    st.stop()
+
+# Seleccionar fecha
+st.subheader("📅 Selecciona la fecha:")
+fecha_seleccionada = st.selectbox(
+    "Fecha:",
+    options=fechas_disponibles,
+    index=0,  # Mostrar la fecha más reciente por defecto
+    key="fecha_selector",
+    format_func=lambda x: datetime.strptime(x, "%Y-%m-%d").strftime("%d/%m/%Y")
 )
 
-# Obtener los detalles de la hoja seleccionada
-hoja_seleccionada = next((hoja for hoja in hojas_disponibles if hoja["nombre"] == hoja_seleccionada_nombre), None)
+# Obtener el GID correspondiente a la fecha seleccionada
+gid_seleccionado = FECHAS_GIDS.get(fecha_seleccionada)
 
-if hoja_seleccionada:
-    st.info(f"📅 Visualizando datos de: {hoja_seleccionada['nombre']}")
+if not gid_seleccionado:
+    st.error(f"No se encontró GID para la fecha {fecha_seleccionada}")
+    st.stop()
 
-# Cargar datos según la ubicación y hoja seleccionada
-with st.spinner(f"Cargando datos de {ubicacion} - {hoja_seleccionada_nombre}..."):
-    # Nota: Aquí debes usar el gid correcto para cada hoja
-    df = load_data(SHEET_URLS[ubicacion], hoja_seleccionada["gid"] if hoja_seleccionada else None)
+# Cargar datos según la ubicación y fecha seleccionada
+with st.spinner(f"Cargando datos de {ubicacion} - {fecha_seleccionada}..."):
+    df = load_data(SHEET_URLS[ubicacion], gid_seleccionado)
 
 if df is not None and not df.empty:
     # Limpiar nombres de columnas (eliminar espacios extra)
     df.columns = df.columns.str.strip()
+    
+    # Mostrar información de la fecha seleccionada
+    fecha_formateada = datetime.strptime(fecha_seleccionada, "%Y-%m-%d").strftime("%d/%m/%Y")
+    st.success(f"📊 Visualizando datos del {fecha_formateada} - {ubicacion}")
     
     # Identificar columnas de precio automáticamente
     price_columns = []
@@ -127,18 +128,21 @@ if df is not None and not df.empty:
     if not price_columns:
         price_columns = df.select_dtypes(include=[np.number]).columns.tolist()
     
-    # Selector de columna de precio
+    # Selector de columna de precio si hay múltiples opciones
     if price_columns:
-        precio_col = st.selectbox(
-            "Selecciona la columna de precio:",
-            price_columns,
-            index=0,
-            key="precio_selector"
-        )
+        if len(price_columns) > 1:
+            precio_col = st.selectbox(
+                "💰 Selecciona la columna de precio:",
+                price_columns,
+                index=0,
+                key="precio_selector"
+            )
+        else:
+            precio_col = price_columns[0]
         
         # Mostrar estadísticas de precios
         st.divider()
-        st.subheader(f"📊 Información de Data Reset - {hoja_seleccionada_nombre}")
+        st.subheader(f"📈 Métricas de Precios - {fecha_formateada}")
         
         # Calcular métricas
         precio_minimo = df[precio_col].min()
@@ -151,31 +155,36 @@ if df is not None and not df.empty:
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
-            st.metric("Precio Mínimo", f"${precio_minimo:,.2f}")
+            st.metric("Precio Mínimo", f"${precio_minimo:,.2f}", 
+                     help="El precio más bajo registrado en esta fecha")
         
         with col2:
-            st.metric("Precio Máximo", f"${precio_maximo:,.2f}")
+            st.metric("Precio Máximo", f"${precio_maximo:,.2f}", 
+                     help="El precio más alto registrado en esta fecha")
         
         with col3:
-            st.metric("Suma de Precios", f"${suma_precios:,.2f}")
+            st.metric("Suma Total", f"${suma_precios:,.2f}", 
+                     help="Suma de todos los precios registrados")
         
         with col4:
-            st.metric("Promedio Diario", f"${promedio_diario:,.2f}")
+            st.metric("Promedio Diario", f"${promedio_diario:,.2f}", 
+                     help="Promedio de precios (suma total / cantidad de registros)")
         
         # Mostrar detalles del cálculo
-        with st.expander("📝 Detalles del cálculo"):
-            st.write(f"**Fórmula del promedio:** Suma de precios / Cantidad de registros")
-            st.write(f"**Suma de precios:** ${suma_precios:,.2f}")
-            st.write(f"**Cantidad de registros:** {cantidad_registros:,}")
-            st.write(f"**Cálculo:** ${suma_precios:,.2f} / {cantidad_registros:,} = ${promedio_diario:,.2f}")
+        with st.expander("📝 Detalles del cálculo del promedio"):
+            st.write(f"**Fórmula:** Suma de precios ÷ Cantidad de registros = Promedio")
+            st.write(f"**Cálculo:** ${suma_precios:,.2f} ÷ {cantidad_registros:,} = ${promedio_diario:,.2f}")
             
             # Mostrar distribución de precios
             st.subheader("Distribución de Precios")
-            st.bar_chart(df[precio_col].value_counts().head(10))
+            if len(df[precio_col].unique()) > 1:
+                st.bar_chart(df[precio_col].value_counts())
+            else:
+                st.info("Solo hay un valor único de precio en esta fecha")
     
-    # Mostrar todos los datos de la hoja seleccionada
+    # Mostrar todos los datos de la fecha seleccionada
     st.divider()
-    st.subheader(f"Datos de {hoja_seleccionada_nombre}")
+    st.subheader(f"📋 Datos Completos - {fecha_formateada}")
     st.dataframe(df, use_container_width=True)
     
     # Mostrar información del dataset
@@ -194,51 +203,55 @@ if df is not None and not df.empty:
     st.download_button(
         label="📥 Descargar Datos como CSV",
         data=df.to_csv(index=False).encode('utf-8'),
-        file_name=f"datos_{ubicacion.lower()}_{hoja_seleccionada_nombre.replace(' ', '_')}.csv",
+        file_name=f"datos_{ubicacion.lower()}_{fecha_seleccionada}.csv",
         mime="text/csv",
+        help="Descargar todos los datos de esta fecha en formato CSV"
     )
     
-    # Navegación entre hojas
+    # Navegación entre fechas
     st.divider()
-    st.subheader("🚀 Navegación Rápida entre Hojas")
+    st.subheader("🔄 Navegación entre Fechas")
+    
+    current_index = fechas_disponibles.index(fecha_seleccionada)
     
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        if st.button("⏮️ Hoja Anterior", use_container_width=True):
-            # Lógica para ir a la hoja anterior
-            current_index = hojas_nombres.index(hoja_seleccionada_nombre)
-            if current_index < len(hojas_nombres) - 1:
-                st.session_state.hoja_selector = hojas_nombres[current_index + 1]
+        if current_index < len(fechas_disponibles) - 1:
+            fecha_anterior = fechas_disponibles[current_index + 1]
+            if st.button(f"⏮️ {datetime.strptime(fecha_anterior, '%Y-%m-%d').strftime('%d/%m')}", 
+                        use_container_width=True, help="Ir a la fecha anterior"):
+                st.session_state.fecha_selector = fecha_anterior
                 st.rerun()
     
     with col2:
-        st.info(f"Hoja actual: {hoja_seleccionada_nombre}")
+        st.info(f"Fecha actual: {fecha_formateada}")
     
     with col3:
-        if st.button("⏭️ Hoja Siguiente", use_container_width=True):
-            # Lógica para ir a la hoja siguiente
-            current_index = hojas_nombres.index(hoja_seleccionada_nombre)
-            if current_index > 0:
-                st.session_state.hoja_selector = hojas_nombres[current_index - 1]
+        if current_index > 0:
+            fecha_siguiente = fechas_disponibles[current_index - 1]
+            if st.button(f"⏭️ {datetime.strptime(fecha_siguiente, '%Y-%m-%d').strftime('%d/%m')}", 
+                        use_container_width=True, help="Ir a la fecha siguiente"):
+                st.session_state.fecha_selector = fecha_siguiente
                 st.rerun()
 
 else:
     if df is None:
         st.error("No se pudieron cargar los datos. Verifica que la hoja de cálculo sea pública.")
     else:
-        st.warning("La hoja seleccionada no contiene datos.")
+        st.warning("No hay datos disponibles para la fecha seleccionada.")
 
-# Información de todas las hojas disponibles
-with st.expander("📋 Ver todas las hojas disponibles"):
-    st.write("Lista completa de hojas:")
-    for i, hoja in enumerate(hojas_disponibles):
-        st.write(f"{i+1}. {hoja['nombre']}")
+# Información de todas las fechas disponibles
+with st.expander("📋 Ver todas las fechas disponibles"):
+    st.write("Lista completa de fechas con datos:")
+    for i, fecha in enumerate(fechas_disponibles):
+        fecha_bonita = datetime.strptime(fecha, "%Y-%m-%d").strftime("%d/%m/%Y")
+        st.write(f"{i+1}. {fecha_bonita}")
 
 # Pie de página
 st.divider()
 st.markdown(
-    "<div style='text-align: center; color: gray;'>Sistema de análisis de precios por hoja • "
-    f"Datos de {ubicacion} • {datetime.now().strftime('%Y-%m-%d %H:%M')}</div>",
+    "<div style='text-align: center; color: gray;'>Sistema de análisis de precios por fecha • "
+    f"{ubicacion} • Última actualización: {datetime.now().strftime('%d/%m/%Y %H:%M')}</div>",
     unsafe_allow_html=True
 )
