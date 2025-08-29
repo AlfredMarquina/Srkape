@@ -7,6 +7,17 @@ import pandas as pd
 import numpy as np
 import os
 import re
+import random
+import pytz
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.action_chains import ActionChains
+from fake_useragent import UserAgent
+from oauth2client.service_account import ServiceAccountCredentials
 
 # SOLUCIÓN: Deshabilitar el watcher de páginas para evitar el error
 os.environ["STREAMLIT_SERVER_ENABLE_STATIC_FILE_WATCHING"] = "false"
@@ -24,8 +35,8 @@ st.set_page_config(
         'Report a bug': 'https://github.com/streamlit/streamlit/issues',
         'About': '''
         ## 📊 Sistema de Análisis de Precios Mérida
-        **Versión:** 2.0
-        **Función:** Calcula el promedio de promedios de las últimas 30 hojas
+        **Versión:** 3.0
+        **Función:** Calcula el promedio de promedios + Scraper Booking.com
         '''
     }
 )
@@ -61,6 +72,11 @@ st.markdown("""
         border: 1px solid #ffeeba;
         margin: 5px 0;
     }
+    .scraper-status {
+        padding: 10px;
+        border-radius: 5px;
+        margin: 10px 0;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -77,39 +93,56 @@ with st.sidebar:
     st.header("⚙️ Configuración")
     st.markdown("---")
     
-    # Inputs para los IDs de Google Sheets
-    SPREADSHEET_ID_ORIGEN = st.text_input(
-        "📋 ID Spreadsheet Origen",
-        value="1TZo6pSlhoFFf00ruIv2dpjszHUMK4I9T_ZFQdo50jEk",
-        help="ID del Google Sheet donde están tus datos diarios"
-    )
-    
-    SPREADSHEET_ID_DESTINO = st.text_input(
-        "💾 ID Spreadsheet Destino", 
-        value="1DgZ7I5kRxOPXE0iQGfqalbkmaOLubBCFipAs7zWqb2g",
-        help="ID del Google Sheet donde se guardarán los resultados"
-    )
-    
-    st.markdown("---")
-    
-    # Selector de funcionalidad
+    # Selector de funcionalidad principal
     funcion = st.selectbox(
         "Selecciona la operación:",
-        ["Calcular Promedio de Promedios", "Solo Mostrar Datos", "Debug: Ver estructura de hojas"]
+        ["Calcular Promedio de Promedios", "Solo Mostrar Datos", "Debug: Ver estructura de hojas", "Scraper Booking.com"]
     )
     
     st.markdown("---")
     
-    # Opciones avanzadas
-    with st.expander("⚡ Opciones avanzadas"):
-        umbral_minimo = st.number_input("Umbral mínimo ($)", value=1000, help="Valor mínimo para considerar como promedio válido")
-        umbral_maximo = st.number_input("Umbral máximo ($)", value=5000000, help="Valor máximo para considerar como promedio válido")
-        buscar_en_toda_hoja = st.checkbox("Buscar en toda la hoja", value=True, help="Buscar valores numéricos en todas las celdas")
+    # Configuración para análisis de promedios
+    if funcion != "Scraper Booking.com":
+        # Inputs para los IDs de Google Sheets
+        SPREADSHEET_ID_ORIGEN = st.text_input(
+            "📋 ID Spreadsheet Origen",
+            value="1TZo6pSlhoFFf00ruIv2dpjszHUMK4I9T_ZFQdo50jEk",
+            help="ID del Google Sheet donde están tus datos diarios"
+        )
+        
+        SPREADSHEET_ID_DESTINO = st.text_input(
+            "💾 ID Spreadsheet Destino", 
+            value="1DgZ7I5kRxOPXE0iQGfqalbkmaOLubBCFipAs7zWqb2g",
+            help="ID del Google Sheet donde se guardarán los resultados"
+        )
+        
+        st.markdown("---")
+        
+        # Opciones avanzadas
+        with st.expander("⚡ Opciones avanzadas"):
+            umbral_minimo = st.number_input("Umbral mínimo ($)", value=1000, help="Valor mínimo para considerar como promedio válido")
+            umbral_maximo = st.number_input("Umbral máximo ($)", value=5000000, help="Valor máximo para considerar como promedio válido")
+            buscar_en_toda_hoja = st.checkbox("Buscar en toda la hoja", value=True, help="Buscar valores numéricos en todas las celdas")
+    
+    # Configuración para el scraper de Booking.com
+    else:
+        st.subheader("🔧 Configuración del Scraper")
+        
+        SPREADSHEET_ID_SCRAPER = st.text_input(
+            "📋 ID Spreadsheet para Scraper",
+            value="13tPaaJCX4o4HkxrRdPiuc5NDP3XhrJuvKdq83Eh7-KU",
+            help="ID del Google Sheet donde se guardarán los datos del scraper"
+        )
+        
+        MAX_RESULTS = st.number_input("Máximo de resultados", value=150, min_value=10, max_value=500, help="Número máximo de hoteles a scrapear")
+        
+        st.markdown("---")
+        st.info("💡 El scraper abrirá una ventana de Chrome automáticamente")
     
     st.markdown("---")
     
     # Botón de ejecución
-    ejecutar = st.button("🚀 Ejecutar Análisis", type="primary", use_container_width=True)
+    ejecutar = st.button("🚀 Ejecutar", type="primary", use_container_width=True)
     
     st.markdown("---")
     st.info("💡 Asegúrate de que las hojas tengan datos y el formato correcto")
@@ -408,14 +441,278 @@ def debug_hojas(client, spreadsheet_id_origen):
         st.error(f"❌ Error en debug: {str(e)}")
 
 # =============================================================================
+# FUNCIONES DEL SCRAPER DE BOOKING.COM
+# =============================================================================
+def init_google_sheets_scraper():
+    """Inicializa la conexión con Google Sheets para el scraper"""
+    try:
+        SCOPES = ['https://spreadsheets.google.com/feeds',
+                 'https://www.googleapis.com/auth/drive']
+        
+        if 'google_credentials' not in st.secrets:
+            st.error("❌ No se encontraron credenciales en Secrets para el scraper.")
+            return None
+            
+        creds_dict = dict(st.secrets["google_credentials"])
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, SCOPES)
+        client = gspread.authorize(creds)
+        return client
+    except Exception as e:
+        st.error(f"❌ Error en autenticación del scraper: {str(e)}")
+        return None
+
+def create_daily_sheet(spreadsheet):
+    """Crea una nueva hoja con el orden de columnas solicitado"""
+    try:
+        today = datetime.now(pytz.timezone('America/Mexico_City')).strftime('%Y-%m-%d')
+        try:
+            worksheet = spreadsheet.add_worksheet(title=today, rows=MAX_RESULTS+10, cols=10)
+        except:
+            worksheet = spreadsheet.worksheet(today)
+        
+        # Orden modificado según lo solicitado
+        headers = ['Nombre', 'Precio (MXN)', 'Puntuación', 'Comentarios', 'Fecha']
+        if worksheet.row_count < 1 or worksheet.row_values(1) != headers:
+            worksheet.insert_row(headers, 1)
+        
+        return worksheet
+    except Exception as e:
+        st.error(f"❌ Error al crear hoja: {e}")
+        return None
+
+def init_driver():
+    """Inicializa el navegador Chrome"""
+    try:
+        chrome_options = Options()
+        chrome_options.add_argument("--start-maximized")
+        chrome_options.add_experimental_option("detach", True)
+        chrome_options.add_argument("--disable-notifications")
+        chrome_options.add_argument("--lang=es")
+        
+        # Configurar User-Agent aleatorio
+        ua = UserAgent()
+        chrome_options.add_argument(f"user-agent={ua.random}")
+        
+        # Inicializar el driver
+        service = Service()
+        driver = webdriver.Chrome(service=service, options=chrome_options)
+        driver.implicitly_wait(15)
+        return driver
+    except Exception as e:
+        st.error(f"❌ Error al iniciar ChromeDriver: {e}")
+        return None
+
+def check_for_captcha(driver):
+    """Verifica si hay CAPTCHA presente"""
+    try:
+        captcha_frame = driver.find_element(By.XPATH, '//iframe[contains(@title, "CAPTCHA")]')
+        if captcha_frame:
+            st.warning("⚠️ CAPTCHA Detectado! Se requiere intervención manual")
+            st.info("Por favor resuelve el CAPTCHA en la ventana del navegador...")
+            return True
+    except:
+        pass
+    return False
+
+def accept_cookies(driver):
+    """Maneja el popup de consentimiento de cookies"""
+    try:
+        cookie_btn = WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable((By.ID, 'onetrust-accept-btn-handler')))
+        ActionChains(driver).move_to_element(cookie_btn).pause(1).click().perform()
+        st.success("✓ Cookies aceptadas")
+        time.sleep(2)
+    except:
+        pass
+
+def load_more_results(driver, SCROLL_PAUSE=2, SCROLL_ATTEMPTS=10):
+    """Hace scroll para cargar más resultados en la misma página"""
+    last_height = driver.execute_script("return document.body.scrollHeight")
+    attempts = 0
+    
+    while attempts < SCROLL_ATTEMPTS:
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        time.sleep(SCROLL_PAUSE)
+        
+        new_height = driver.execute_script("return document.body.scrollHeight")
+        if new_height == last_height:
+            attempts += 1
+            st.write(f"Intento {attempts}/{SCROLL_ATTEMPTS}: No se cargaron más resultados")
+        else:
+            attempts = 0
+            st.success("✓ Se cargaron más resultados")
+        
+        last_height = new_height
+        
+        hotels = driver.find_elements(By.CSS_SELECTOR, '[data-testid="property-card"]')
+        if len(hotels) >= MAX_RESULTS:
+            st.info(f"Se alcanzó el límite de {MAX_RESULTS} hoteles")
+            break
+    
+    return driver.find_elements(By.CSS_SELECTOR, '[data-testid="property-card"]')
+
+def get_hotel_data(hotel_element):
+    """Extrae datos del hotel sin información de distancia"""
+    data = {
+        'nombre': 'N/A',
+        'puntuacion': 'N/A',
+        'comentarios': 'N/A',
+        'precio': 'N/A'
+    }
+    
+    # Extracción del nombre
+    try:
+        name = hotel_element.find_element(By.CSS_SELECTOR, '[data-testid="title"]').text
+        data['nombre'] = name.strip()
+    except Exception as e:
+        st.error(f"Error al extraer nombre: {str(e)}")
+    
+    # Extracción de puntuación y comentarios
+    try:
+        score_element = hotel_element.find_element(By.CSS_SELECTOR, '[data-testid="review-score"]')
+        
+        # Extraer puntuación numérica
+        try:
+            score_number = score_element.find_element(By.CSS_SELECTOR, 'div[aria-hidden="true"]').text
+            data['puntuacion'] = score_number.replace(',', '.')
+        except:
+            pass
+        
+        # Extraer comentarios
+        try:
+            score_text = score_element.find_element(By.CSS_SELECTOR, 'div[aria-hidden="false"]').text
+            if '·' in score_text:
+                parts = score_text.split('·')
+                if len(parts) > 1:
+                    data['comentarios'] = ''.join(c for c in parts[1] if c.isdigit())
+        except:
+            pass
+    except Exception as e:
+        st.error(f"Error al extraer puntuación: {str(e)}")
+    
+    # Extracción de precio
+    try:
+        price_element = hotel_element.find_element(By.CSS_SELECTOR, '[data-testid="price-and-discounted-price"]')
+        price_text = price_element.text
+        data['precio'] = ''.join(c for c in price_text if c.isdigit())
+    except:
+        try:
+            price_element = hotel_element.find_element(By.CSS_SELECTOR, '.bui-price-display__value')
+            price_text = price_element.text
+            data['precio'] = ''.join(c for c in price_text if c.isdigit())
+        except Exception as e:
+            st.error(f"Error al extraer precio: {str(e)}")
+    
+    return data
+
+def run_booking_scraper():
+    """Función principal de scraping con el nuevo orden de columnas"""
+    st.header("🏨 Scraper de Booking.com - Mérida")
+    
+    # Inicializar Google Sheets
+    client = init_google_sheets_scraper()
+    if not client:
+        return 0
+    
+    try:
+        spreadsheet = client.open_by_key(SPREADSHEET_ID_SCRAPER)
+    except Exception as e:
+        st.error(f"❌ Error al abrir la hoja de cálculo: {str(e)}")
+        return 0
+    
+    worksheet = create_daily_sheet(spreadsheet)
+    if not worksheet:
+        return 0
+    
+    # Inicializar el navegador
+    with st.spinner("🖥️ Iniciando navegador Chrome..."):
+        driver = init_driver()
+        if not driver:
+            return 0
+    
+    try:
+        # Parámetros de búsqueda
+        params = {
+            'ss': "Merida",
+            'lang': 'es',
+            'checkin': datetime.now().strftime('%Y-%m-%d'),
+            'checkout': (datetime.now().date() + pd.Timedelta(days=1)).strftime('%Y-%m-%d'),
+            'group_adults': '2',
+            'no_rooms': '1'
+        }
+        
+        BASE_URL = "https://www.booking.com"
+        url = f"{BASE_URL}/searchresults.es.html?{'&'.join(f'{k}={v}' for k,v in params.items())}"
+        
+        st.info(f"🌐 Cargando página: {url}")
+        
+        driver.get(url)
+        time.sleep(5)
+        
+        if check_for_captcha(driver):
+            time.sleep(10)
+        
+        accept_cookies(driver)
+        
+        st.info("⬇️ Haciendo scroll para cargar más resultados...")
+        hotel_elements = load_more_results(driver)
+        hotel_elements = hotel_elements[:MAX_RESULTS]
+        
+        st.success(f"🏨 Total de hoteles cargados: {len(hotel_elements)}")
+        
+        # Barra de progreso
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        hotels_added = 0
+        for i, element in enumerate(hotel_elements):
+            if hotels_added >= MAX_RESULTS:
+                break
+            
+            try:
+                hotel_data = get_hotel_data(element)
+                extraction_time = datetime.now(pytz.timezone('America/Mexico_City')).strftime('%Y-%m-%d %H:%M:%S')
+                
+                # Insertar en el nuevo orden solicitado
+                worksheet.append_row([
+                    hotel_data['nombre'],      # Nombre
+                    hotel_data['precio'],     # Precio
+                    hotel_data['puntuacion'], # Puntuación
+                    hotel_data['comentarios'],# Comentarios
+                    extraction_time          # Fecha
+                ])
+                
+                hotels_added += 1
+                
+                # Actualizar barra de progreso
+                progress = (i + 1) / len(hotel_elements)
+                progress_bar.progress(progress)
+                status_text.text(f"Procesando hotel {i+1}/{len(hotel_elements)}: {hotel_data['nombre'][:30]}...")
+                
+                st.write(f"✅ Añadido #{hotels_added}: {hotel_data['nombre'][:50]}... - Precio: {hotel_data['precio']} MXN - Puntuación: {hotel_data['puntuacion']} ({hotel_data['comentarios']} comentarios)")
+                
+                time.sleep(random.uniform(1, 3))
+                
+            except Exception as e:
+                st.error(f"❌ Error procesando hotel: {str(e)}")
+                continue
+        
+        st.success(f"🔍 Scraping completado. Hoteles totales: {hotels_added}")
+        return hotels_added
+        
+    except Exception as e:
+        st.error(f"❌ Error fatal: {str(e)}")
+        return 0
+    finally:
+        if 'driver' in locals():
+            st.info("🖥️ El navegador permanecerá abierto...")
+            # No cerramos el navegador para permitir interacción manual si es necesario
+
+# =============================================================================
 # LÓGICA PRINCIPAL DE LA APLICACIÓN
 # =============================================================================
 def main():
     if ejecutar:
-        if not SPREADSHEET_ID_ORIGEN or not SPREADSHEET_ID_DESTINO:
-            st.error("❌ Por favor ingresa ambos IDs de Google Sheets")
-            return
-        
         # Autenticación
         client, success = authenticate_google_sheets()
         if not success:
@@ -423,6 +720,10 @@ def main():
         
         # Ejecutar según la opción seleccionada
         if funcion == "Calcular Promedio de Promedios":
+            if not SPREADSHEET_ID_ORIGEN or not SPREADSHEET_ID_DESTINO:
+                st.error("❌ Por favor ingresa ambos IDs de Google Sheets")
+                return
+                
             with st.spinner("🔄 Calculando promedios..."):
                 resultados = calculate_promedio_de_promedios(client, SPREADSHEET_ID_ORIGEN)
                 
@@ -486,32 +787,42 @@ def main():
         
         elif funcion == "Debug: Ver estructura de hojas":
             debug_hojas(client, SPREADSHEET_ID_ORIGEN)
+            
+        elif funcion == "Scraper Booking.com":
+            start_time = time.time()
+            total_hotels = run_booking_scraper()
+            elapsed_time = (time.time() - start_time) / 60
+            
+            st.success("🎉 Reporte final:")
+            st.metric("⏱️ Duración", f"{elapsed_time:.2f} minutos")
+            st.metric("🏨 Hoteles recolectados", total_hotels)
+            st.info(f"📊 Hoja de cálculo: https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID_SCRAPER}")
     
     else:
         # PANTALLA DE INICIO
         st.markdown("""
-        ## 🎯 Bienvenido al Sistema de Análisis de Precios Mérida - v2.0
+        ## 🎯 Bienvenido al Sistema de Análisis de Precios Mérida - v3.0
         
         ### 🆕 ¿Qué hay de nuevo?
         
         - **🔍 Búsqueda inteligente**: Detecta "Promedio:" en diferentes formatos
+        - **🏨 Scraper Booking.com**: Nueva función para extraer datos de hoteles
         - **📊 Análisis avanzado**: Busca en celdas adyacentes y en toda la hoja
         - **⚡ Opciones configurables**: Ajusta umbrales y métodos de búsqueda
         - **🐛 Modo Debug**: Analiza la estructura de tus hojas
         
         ### 🚀 ¿Cómo usar?
         
-        1. **Configura los IDs** de tus Google Sheets en el sidebar ←
-        2. **Selecciona** la operación deseada
-        3. **Ajusta opciones** si es necesario
-        4. **Haz clic** en "Ejecutar Análisis"
-        5. **Revisa** los resultados y el feedback en el sidebar
+        1. **Selecciona** la operación deseada en el sidebar ←
+        2. **Configura los parámetros** según la operación
+        3. **Haz clic** en "Ejecutar"
+        4. **Revisa** los resultados y el feedback
         
         ### 💡 Consejos:
         
+        - Para el scraper: Asegúrate de tener Chrome instalado
         - Usa **"Debug: Ver estructura de hojas"** si no encuentra los promedios
         - Ajusta los **umbrales** si los valores están fuera del rango esperado
-        - Revisa el **sidebar** para ver el progreso en tiempo real
         """)
 
 # =============================================================================
@@ -529,4 +840,4 @@ if __name__ == "__main__":
 # =============================================================================
 st.markdown("---")
 st.caption(f"📅 Última actualización: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-st.caption("⚡ Powered by Streamlit + Google Sheets API | 🆕 v2.0 con búsqueda inteligente")
+st.caption("⚡ Powered by Streamlit + Google Sheets API + Selenium | 🆕 v3.0 con scraper")
