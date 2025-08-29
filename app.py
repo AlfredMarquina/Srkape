@@ -6,7 +6,7 @@ from urllib.parse import urlparse, parse_qs
 
 # Configuración de la página
 st.set_page_config(
-    page_title="Sistema de Análisis de Precios",
+    page_title="Sistema de Análisis de Precios por Fecha",
     page_icon="💰",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -20,7 +20,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Título de la aplicación
-st.title("💰 Sistema de Análisis de Precios por Ubicación")
+st.title("💰 Sistema de Análisis de Precios por Fecha Específica")
 
 # URLs de las hojas de cálculo
 SHEET_URLS = {
@@ -132,82 +132,93 @@ if df is not None:
             # Convertir a formato de fecha
             df[fecha_col] = pd.to_datetime(df[fecha_col], errors='coerce')
             
-            # Obtener rango de fechas disponible
-            min_date = df[fecha_col].min()
-            max_date = df[fecha_col].max()
+            # Obtener fechas disponibles
+            fechas_disponibles = df[fecha_col].dropna().dt.date.unique()
+            fechas_disponibles = sorted(fechas_disponibles)
             
-            # Si hay valores de fecha válidos
-            if not pd.isna(min_date) and not pd.isna(max_date):
-                # Convertir a date (sin hora)
-                min_date = min_date.date()
-                max_date = max_date.date()
-                
-                # Selector de rango de fechas
-                selected_dates = st.date_input(
-                    "Selecciona el rango de fechas:",
-                    value=(min_date, max_date),
-                    min_value=min_date,
-                    max_value=max_date
+            if len(fechas_disponibles) > 0:
+                # Selector de fecha única
+                fecha_seleccionada = st.selectbox(
+                    "Selecciona una fecha específica:",
+                    options=fechas_disponibles,
+                    index=len(fechas_disponibles)-1,  # Última fecha por defecto
+                    format_func=lambda x: x.strftime("%Y-%m-%d")
                 )
                 
-                # Filtrar por fecha si se seleccionaron dos fechas
-                if len(selected_dates) == 2:
-                    start_date, end_date = selected_dates
-                    # Convertir a datetime para comparación
-                    start_datetime = pd.to_datetime(start_date)
-                    end_datetime = pd.to_datetime(end_date)
+                # Filtrar por fecha seleccionada
+                if fecha_seleccionada:
+                    mask = df[fecha_col].dt.date == fecha_seleccionada
+                    df_filtrado = df.loc[mask]
                     
-                    # Filtrar dataframe
-                    mask = (df[fecha_col] >= start_datetime) & (df[fecha_col] <= end_datetime)
-                    df = df.loc[mask]
+                    # Mostrar información de la fecha seleccionada
+                    st.success(f"Mostrando datos para la fecha: {fecha_seleccionada.strftime('%Y-%m-%d')}")
+                    st.write(f"Registros encontrados: {len(df_filtrado)}")
+                    
+                    # Mostrar estadísticas de precios si tenemos columna de precio
+                    if precio_col and len(df_filtrado) > 0:
+                        st.divider()
+                        st.subheader(f"📊 Información de Data Reset - {fecha_seleccionada.strftime('%Y-%m-%d')}")
+                        
+                        # Calcular métricas
+                        precio_minimo = df_filtrado[precio_col].min()
+                        precio_maximo = df_filtrado[precio_col].max()
+                        suma_precios = df_filtrado[precio_col].sum()
+                        cantidad_registros = df_filtrado[precio_col].count()
+                        promedio_diario = suma_precios / cantidad_registros if cantidad_registros > 0 else 0
+                        
+                        # Mostrar métricas en columnas
+                        col1, col2, col3, col4 = st.columns(4)
+                        
+                        with col1:
+                            st.metric("Precio Mínimo del Día", f"${precio_minimo:,.2f}")
+                        
+                        with col2:
+                            st.metric("Precio Máximo del Día", f"${precio_maximo:,.2f}")
+                        
+                        with col3:
+                            st.metric("Suma de Todos los Precios", f"${suma_precios:,.2f}")
+                        
+                        with col4:
+                            st.metric("Promedio Diario", f"${promedio_diario:,.2f}")
+                        
+                        # Mostrar detalles del cálculo
+                        with st.expander("📝 Detalles del cálculo"):
+                            st.write(f"**Fórmula del promedio:** Suma de precios / Cantidad de registros")
+                            st.write(f"**Suma de precios:** ${suma_precios:,.2f}")
+                            st.write(f"**Cantidad de registros:** {cantidad_registros:,}")
+                            st.write(f"**Cálculo:** ${suma_precios:,.2f} / {cantidad_registros:,} = ${promedio_diario:,.2f}")
+                            
+                            # Mostrar distribución de precios
+                            st.subheader("Distribución de Precios")
+                            st.bar_chart(df_filtrado[precio_col].value_counts())
+                        
+                        # Mostrar datos filtrados
+                        st.divider()
+                        st.subheader(f"Datos de {fecha_seleccionada.strftime('%Y-%m-%d')}")
+                        st.dataframe(df_filtrado, use_container_width=True)
+                        
+                        # Opciones de descarga para datos filtrados
+                        st.download_button(
+                            label="📥 Descargar Datos Filtrados como CSV",
+                            data=df_filtrado.to_csv(index=False).encode('utf-8'),
+                            file_name=f"datos_{ubicacion.lower()}_{fecha_seleccionada.strftime('%Y%m%d')}.csv",
+                            mime="text/csv",
+                        )
+                    elif precio_col:
+                        st.warning("No hay datos de precios para la fecha seleccionada.")
+            else:
+                st.warning("No se encontraron fechas válidas en el dataset.")
+                
         except Exception as e:
             st.error(f"No se pudieron procesar las fechas: {e}")
     
-    # Mostrar estadísticas de precios si tenemos columna de precio
-    if precio_col:
-        st.divider()
-        st.subheader("📊 Información de Data Reset - Análisis de Precios")
-        
-        # Calcular métricas
-        precio_minimo = df[precio_col].min()
-        precio_maximo = df[precio_col].max()
-        suma_precios = df[precio_col].sum()
-        cantidad_registros = df[precio_col].count()
-        promedio_diario = suma_precios / cantidad_registros if cantidad_registros > 0 else 0
-        
-        # Mostrar métricas en columnas
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            st.metric("Precio Mínimo del Día", f"${precio_minimo:,.2f}")
-        
-        with col2:
-            st.metric("Precio Máximo del Día", f"${precio_maximo:,.2f}")
-        
-        with col3:
-            st.metric("Suma de Todos los Precios", f"${suma_precios:,.2f}")
-        
-        with col4:
-            st.metric("Promedio Diario", f"${promedio_diario:,.2f}")
-        
-        # Mostrar detalles del cálculo
-        with st.expander("📝 Detalles del cálculo"):
-            st.write(f"**Fórmula del promedio:** Suma de precios / Cantidad de registros")
-            st.write(f"**Suma de precios:** ${suma_precios:,.2f}")
-            st.write(f"**Cantidad de registros:** {cantidad_registros:,}")
-            st.write(f"**Cálculo:** ${suma_precios:,.2f} / {cantidad_registros:,} = ${promedio_diario:,.2f}")
-            
-            # Mostrar distribución de precios
-            st.subheader("Distribución de Precios")
-            st.bar_chart(df[precio_col].value_counts().head(10))
-    
-    # Mostrar todos los datos
+    # Mostrar todos los datos (sin filtrar)
     st.divider()
     st.subheader(f"Todos los datos de {ubicacion}")
     st.dataframe(df, use_container_width=True)
     
-    # Mostrar información del dataset
-    with st.expander("ℹ️ Información del dataset"):
+    # Mostrar información del dataset completo
+    with st.expander("ℹ️ Información del dataset completo"):
         col1, col2 = st.columns(2)
         
         with col1:
@@ -218,11 +229,11 @@ if df is not None:
             st.subheader("Estadísticas descriptivas")
             st.write(df.describe())
     
-    # Opciones de descarga
+    # Opciones de descarga para todos los datos
     st.download_button(
-        label="📥 Descargar Datos como CSV",
+        label="📥 Descargar Todos los Datos como CSV",
         data=df.to_csv(index=False).encode('utf-8'),
-        file_name=f"datos_{ubicacion.lower()}.csv",
+        file_name=f"todos_datos_{ubicacion.lower()}.csv",
         mime="text/csv",
     )
 else:
@@ -231,7 +242,7 @@ else:
 # Pie de página
 st.divider()
 st.markdown(
-    "<div style='text-align: center; color: gray;'>Sistema de análisis de precios • "
+    "<div style='text-align: center; color: gray;'>Sistema de análisis de precios por fecha • "
     f"Datos de {ubicacion} • {datetime.now().strftime('%Y-%m-%d %H:%M')}</div>",
     unsafe_allow_html=True
 )
