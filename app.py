@@ -89,16 +89,21 @@ with st.sidebar:
 # FUNCIONES PRINCIPALES
 # =============================================================================
 def authenticate_google_sheets():
-    """Autenticación con Google Sheets API"""
+    """Autenticación con Google Sheets API usando Streamlit Secrets"""
     try:
         SCOPES = [
             'https://www.googleapis.com/auth/spreadsheets',
             'https://www.googleapis.com/auth/drive'
         ]
         
-        credentials = Credentials.from_service_account_file(
-            "credentials.json", scopes=SCOPES
-        )
+        # Obtener credenciales desde Streamlit Secrets
+        if 'google_credentials' not in st.secrets:
+            st.error("❌ No se encontraron credenciales en Secrets. Por favor configura las credenciales en la sección de Secrets de Streamlit.")
+            return None, False
+            
+        creds_dict = dict(st.secrets["google_credentials"])
+        
+        credentials = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
         client = gspread.authorize(credentials)
         return client, True
     except Exception as e:
@@ -342,29 +347,39 @@ def main():
         
         ### ⚠️ Requisitos:
         
-        - Archivo `credentials.json` con permisos de Google Sheets
+        - Credenciales de Google API configuradas en Streamlit Secrets
         - Permisos de lectura en el spreadsheet origen
         - Permisos de escritura en el spreadsheet destino
         - Conexión a internet estable
         """)
         
-        # Ejemplo de cómo debería verse el credentials.json
-        with st.expander("🔐 Información sobre credentials.json"):
-            st.code("""
-            {
-                "type": "service_account",
-                "project_id": "tu-project-id",
-                "private_key_id": "tu-private-key-id",
-                "private_key": "-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----\\n",
-                "client_email": "tu-service-account@tu-project.iam.gserviceaccount.com",
-                "client_id": "123456789",
-                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                "token_uri": "https://oauth2.googleapis.com/token",
-                "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-                "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/..."
-            }
+        # Información sobre cómo configurar Secrets
+        with st.expander("🔐 Configuración de Secrets en Streamlit"):
+            st.markdown("""
+            ### Cómo configurar las credenciales de Google API:
+            
+            1. Ve a [Google Cloud Console](https://console.cloud.google.com/)
+            2. Crea un proyecto o selecciona uno existente
+            3. Habilita **Google Sheets API** y **Google Drive API**
+            4. Ve a "Credenciales" → "Crear credenciales" → "Cuenta de servicio"
+            5. Descarga el archivo JSON de la cuenta de servicio
+            6. En Streamlit Cloud, ve a la configuración de tu app
+            7. En la pestaña "Secrets", pega el contenido del JSON con el formato:
+            
+            ```toml
+            [google_credentials]
+            type = "service_account"
+            project_id = "tu-project-id"
+            private_key_id = "tu-private-key-id"
+            private_key = "-----BEGIN PRIVATE KEY-----\\ntu-clave-privada-completa-aqui\\n-----END PRIVATE KEY-----\\n"
+            client_email = "tu-email@tu-proyecto.iam.gserviceaccount.com"
+            client_id = "tu-client-id"
+            auth_uri = "https://accounts.google.com/o/oauth2/auth"
+            token_uri = "https://oauth2.googleapis.com/token"
+            auth_provider_x509_cert_url = "https://www.googleapis.com/oauth2/v1/certs"
+            client_x509_cert_url = "https://www.googleapis.com/robot/v1/metadata/x509/tu-email%40tu-proyecto.iam.gserviceaccount.com"
+            ```
             """)
-            st.warning("⚠️ Este archivo NO debe subirse a GitHub por seguridad")
 
 # =============================================================================
 # EJECUCIÓN DE LA APLICACIÓN
