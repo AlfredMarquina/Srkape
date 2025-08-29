@@ -6,6 +6,7 @@ import time
 import pandas as pd
 import numpy as np
 import os
+import re
 
 # SOLUCIÓN: Deshabilitar el watcher de páginas para evitar el error
 os.environ["STREAMLIT_SERVER_ENABLE_STATIC_FILE_WATCHING"] = "false"
@@ -23,7 +24,7 @@ st.set_page_config(
         'Report a bug': 'https://github.com/streamlit/streamlit/issues',
         'About': '''
         ## 📊 Sistema de Análisis de Precios Mérida
-        **Versión:** 1.0
+        **Versión:** 2.0
         **Función:** Calcula el promedio de promedios de las últimas 30 hojas
         '''
     }
@@ -43,6 +44,22 @@ st.markdown("""
     .stButton button:hover {
         background-color: #FF6B6B;
         color: white;
+    }
+    .success-box {
+        background-color: #d4edda;
+        color: #155724;
+        padding: 10px;
+        border-radius: 5px;
+        border: 1px solid #c3e6cb;
+        margin: 5px 0;
+    }
+    .warning-box {
+        background-color: #fff3cd;
+        color: #856404;
+        padding: 10px;
+        border-radius: 5px;
+        border: 1px solid #ffeeba;
+        margin: 5px 0;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -78,8 +95,16 @@ with st.sidebar:
     # Selector de funcionalidad
     funcion = st.selectbox(
         "Selecciona la operación:",
-        ["Calcular Promedio de Promedios", "Solo Mostrar Datos"]
+        ["Calcular Promedio de Promedios", "Solo Mostrar Datos", "Debug: Ver estructura de hojas"]
     )
+    
+    st.markdown("---")
+    
+    # Opciones avanzadas
+    with st.expander("⚡ Opciones avanzadas"):
+        umbral_minimo = st.number_input("Umbral mínimo ($)", value=1000, help="Valor mínimo para considerar como promedio válido")
+        umbral_maximo = st.number_input("Umbral máximo ($)", value=5000000, help="Valor máximo para considerar como promedio válido")
+        buscar_en_toda_hoja = st.checkbox("Buscar en toda la hoja", value=True, help="Buscar valores numéricos en todas las celdas")
     
     st.markdown("---")
     
@@ -90,7 +115,7 @@ with st.sidebar:
     st.info("💡 Asegúrate de que las hojas tengan datos y el formato correcto")
 
 # =============================================================================
-# FUNCIONES PRINCIPALES
+# FUNCIONES PRINCIPALES - MEJORADAS
 # =============================================================================
 def authenticate_google_sheets():
     """Autenticación con Google Sheets API usando Streamlit Secrets"""
@@ -114,51 +139,134 @@ def authenticate_google_sheets():
         st.error(f"❌ Error en autenticación: {str(e)}")
         return None, False
 
+def extraer_valor_numerico(valor_cell):
+    """Extraer valor numérico de una celda"""
+    try:
+        if not valor_cell:
+            return None
+            
+        # Limpiar el valor
+        valor_limpio = str(valor_cell).replace('$', '').replace('MXN', '')
+        valor_limpio = valor_limpio.replace('mxn', '').replace('MX', '')
+        valor_limpio = valor_limpio.replace(',', '').replace(' ', '')
+        valor_limpio = valor_limpio.replace('USD', '').replace('usd', '')
+        valor_limpio = valor_limpio.replace('(', '').replace(')', '')
+        
+        # Buscar números con expresiones regulares
+        numeros = re.findall(r'[-+]?\d*\.\d+|\d+', valor_limpio)
+        
+        if numeros:
+            # Tomar el primer número encontrado (generalmente es el principal)
+            numero = float(numeros[0])
+            
+            # Filtrar valores razonables para promedios
+            if umbral_minimo <= numero <= umbral_maximo:
+                return numero
+    
+    except (ValueError, TypeError):
+        pass
+    
+    return None
+
 def extract_promedio_final(worksheet):
-    """Extraer el valor del promedio final de una hoja"""
+    """Extraer el valor del promedio final de una hoja - VERSIÓN MEJORADA"""
     try:
         data = worksheet.get_all_values()
         
         if len(data) <= 1:
+            st.sidebar.warning(f"📄 '{worksheet.title}': Muy pocos datos")
             return None
         
-        # Buscar específicamente "Promedio:" en los datos
+        # Buscar "Promedio:" en diferentes formatos y posiciones
+        posibles_palabras_clave = [
+            'promedio', 'promedio:', 'promedio final', 'total', 'suma',
+            'average', 'mean', 'total:', 'resultado', 'valor final',
+            'importe', 'monto', 'cantidad', 'valor', 'precio'
+        ]
+        
+        # Buscar en todas las celdas
         for row_idx, row in enumerate(data):
             for col_idx, cell in enumerate(row):
-                if cell and 'promedio:' in cell.lower():
-                    # Buscar valor en la celda siguiente
-                    if col_idx + 1 < len(row):
-                        valor_cell = row[col_idx + 1]
-                        if valor_cell and '$' in valor_cell:
-                            try:
-                                # Limpiar y convertir el valor
-                                valor_limpio = valor_cell.replace('$', '').replace('MXN', '')
-                                valor_limpio = valor_limpio.replace('mxn', '').replace('MX', '')
-                                valor_limpio = valor_limpio.replace(',', '').strip()
-                                
-                                if valor_limpio and valor_limpio.replace('.', '', 1).isdigit():
-                                    promedio = float(valor_limpio)
-                                    # Filtrar valores razonables para promedios
-                                    if 100000 <= promedio <= 1000000:
-                                        return promedio
-                            except ValueError:
-                                continue
-        return None
+                cell_value = str(cell).strip().lower() if cell else ""
+                
+                # Verificar si contiene alguna palabra clave
+                if any(keyword in cell_value for keyword in posibles_palabras_clave):
+                    # Buscar valor numérico en celdas adyacentes
+                    direcciones = [
+                        (0, 1),   # Derecha
+                        (1, 0),   # Abajo
+                        (0, -1),  # Izquierda
+                        (-1, 0),  # Arriba
+                        (1, 1),   # Diagonal inferior derecha
+                        (1, -1),  # Diagonal inferior izquierda
+                    ]
+                    
+                    for dr, dc in direcciones:
+                        new_row, new_col = row_idx + dr, col_idx + dc
+                        if (0 <= new_row < len(data) and 
+                            0 <= new_col < len(row) and 
+                            data[new_row][new_col]):
+                            
+                            valor_cell = data[new_row][new_col]
+                            promedio = extraer_valor_numerico(valor_cell)
+                            if promedio is not None:
+                                st.sidebar.success(f"✅ '{worksheet.title}': ${promedio:,.2f} (encontrado cerca de '{cell}')")
+                                return promedio
+        
+        # Si no se encontró y está habilitado, buscar patrones numéricos en toda la hoja
+        if buscar_en_toda_hoja:
+            st.sidebar.info(f"🔍 Buscando patrones en '{worksheet.title}'...")
+            return buscar_patrones_numericos(data, worksheet.title)
+        else:
+            st.sidebar.warning(f"⚠️ '{worksheet.title}': No se encontró 'Promedio:'")
+            return None
+        
     except Exception as e:
-        st.error(f"Error procesando hoja: {str(e)}")
+        st.error(f"Error procesando hoja '{worksheet.title}': {str(e)}")
         return None
 
+def buscar_patrones_numericos(data, nombre_hoja):
+    """Buscar patrones numéricos en toda la hoja"""
+    valores_encontrados = []
+    
+    for row_idx, row in enumerate(data):
+        for col_idx, cell in enumerate(row):
+            if cell:
+                valor = extraer_valor_numerico(cell)
+                if valor is not None:
+                    valores_encontrados.append({
+                        'valor': valor,
+                        'fila': row_idx + 1,
+                        'columna': col_idx + 1,
+                        'celda': cell
+                    })
+    
+    if valores_encontrados:
+        # Ordenar por valor y tomar el más grande (generalmente es el total/promedio)
+        valores_encontrados.sort(key=lambda x: x['valor'], reverse=True)
+        mayor_valor = valores_encontrados[0]
+        
+        st.sidebar.success(f"🔢 '{nombre_hoja}': ${mayor_valor['valor']:,.2f} (fila {mayor_valor['fila']}, col {mayor_valor['columna']})")
+        return mayor_valor['valor']
+    
+    st.sidebar.warning(f"❌ '{nombre_hoja}': No se encontraron valores numéricos")
+    return None
+
 def calculate_promedio_de_promedios(client, spreadsheet_id_origen):
-    """Calcular el promedio de los promedios finales"""
+    """Calcular el promedio de los promedios finales - VERSIÓN MEJORADA"""
     try:
         spreadsheet_origen = client.open_by_key(spreadsheet_id_origen)
         all_worksheets = spreadsheet_origen.worksheets()
-        ultimas_hojas = all_worksheets[-30:] if len(all_worksheets) >= 30 else all_worksheets
         
-        st.info(f"📑 Analizando {len(ultimas_hojas)} hojas...")
+        # Filtrar solo hojas que parezcan ser de fechas (nombres con números)
+        hojas_fechas = [ws for ws in all_worksheets if any(c.isdigit() for c in ws.title)]
+        ultimas_hojas = hojas_fechas[-30:] if len(hojas_fechas) >= 30 else hojas_fechas
+        
+        st.info(f"📑 Analizando {len(ultimas_hojas)} hojas de fechas...")
         
         promedios_finales = []
         hojas_procesadas = []
+        hojas_sin_datos = []
         
         # Barra de progreso
         progress_bar = st.progress(0)
@@ -172,15 +280,21 @@ def calculate_promedio_de_promedios(client, spreadsheet_id_origen):
             if promedio is not None:
                 promedios_finales.append(promedio)
                 hojas_procesadas.append(worksheet.title)
-                st.sidebar.success(f"✅ {worksheet.title}: ${promedio:,.2f}")
             else:
-                st.sidebar.warning(f"⚠️ {worksheet.title}: Sin promedio")
+                hojas_sin_datos.append(worksheet.title)
             
             time.sleep(0.1)
         
         # Limpiar barra de progreso
         progress_bar.empty()
         status_text.empty()
+        
+        # Mostrar resumen de hojas sin datos
+        if hojas_sin_datos:
+            with st.expander("📋 Hojas sin promedios encontrados", expanded=True):
+                st.warning(f"Se encontraron {len(hojas_sin_datos)} hojas sin promedios:")
+                for hoja in hojas_sin_datos:
+                    st.write(f"• {hoja}")
         
         if not promedios_finales:
             st.error("❌ No se encontraron promedios en ninguna hoja")
@@ -195,8 +309,10 @@ def calculate_promedio_de_promedios(client, spreadsheet_id_origen):
             'maximo': max(promedios_finales),
             'total_hojas': len(ultimas_hojas),
             'hojas_con_promedio': len(promedios_finales),
+            'hojas_sin_promedio': len(hojas_sin_datos),
             'promedios_individuales': promedios_finales,
             'nombres_hojas': hojas_procesadas,
+            'hojas_sin_datos': hojas_sin_datos,
             'fecha_calculo': datetime.now()
         }
         
@@ -218,7 +334,8 @@ def save_results_to_sheet(client, spreadsheet_id_destino, results):
             results['minimo'],
             results['maximo'],
             results['total_hojas'],
-            results['hojas_con_promedio']
+            results['hojas_con_promedio'],
+            results['hojas_sin_promedio']
         ]
         
         # Obtener datos existentes
@@ -231,8 +348,9 @@ def save_results_to_sheet(client, spreadsheet_id_destino, results):
                 "Promedio de Promedios (MXN)", 
                 "Mínimo", 
                 "Máximo",
-                "Total Hojas",
-                "Hojas con Promedio"
+                "Total Hojas Analizadas",
+                "Hojas con Promedio",
+                "Hojas sin Promedio"
             ]
             worksheet.update([encabezados, datos])
         else:
@@ -244,6 +362,50 @@ def save_results_to_sheet(client, spreadsheet_id_destino, results):
     except Exception as e:
         st.error(f"❌ Error al guardar resultados: {str(e)}")
         return False
+
+def debug_hojas(client, spreadsheet_id_origen):
+    """Función de debug para ver la estructura de las hojas"""
+    try:
+        spreadsheet = client.open_by_key(spreadsheet_id_origen)
+        hojas = spreadsheet.worksheets()
+        
+        st.subheader("🔍 Debug: Estructura de Hojas")
+        st.info(f"Total de hojas encontradas: {len(hojas)}")
+        
+        for i, hoja in enumerate(hojas[:5]):  # Mostrar solo las primeras 5 para no saturar
+            with st.expander(f"Hoja: {hoja.title}"):
+                try:
+                    datos = hoja.get_all_values()
+                    st.write(f"Filas: {len(datos)}, Columnas: {len(datos[0]) if datos else 0}")
+                    
+                    # Mostrar primeras 5 filas
+                    if datos:
+                        st.write("**Primeras 5 filas:**")
+                        for j, fila in enumerate(datos[:5]):
+                            st.write(f"Fila {j+1}: {fila}")
+                    
+                    # Buscar celdas que contengan "promedio"
+                    celdas_promedio = []
+                    for row_idx, row in enumerate(datos):
+                        for col_idx, cell in enumerate(row):
+                            if cell and 'promedio' in str(cell).lower():
+                                celdas_promedio.append({
+                                    'fila': row_idx + 1,
+                                    'columna': col_idx + 1,
+                                    'valor': cell,
+                                    'valores_adyacentes': []
+                                })
+                    
+                    if celdas_promedio:
+                        st.success("**¡Se encontraron celdas con 'promedio'!**")
+                        for celda in celdas_promedio:
+                            st.write(f"Fila {celda['fila']}, Col {celda['columna']}: `{celda['valor']}`")
+                    
+                except Exception as e:
+                    st.error(f"Error al leer hoja: {str(e)}")
+        
+    except Exception as e:
+        st.error(f"❌ Error en debug: {str(e)}")
 
 # =============================================================================
 # LÓGICA PRINCIPAL DE LA APLICACIÓN
@@ -289,11 +451,13 @@ def main():
                         )
                     
                     # Estadísticas adicionales
-                    col4, col5 = st.columns(2)
+                    col4, col5, col6 = st.columns(3)
                     with col4:
                         st.info(f"📋 Total de hojas analizadas: {resultados['total_hojas']}")
                     with col5:
-                        st.info(f"✅ Hojas con promedio encontrado: {resultados['hojas_con_promedio']}")
+                        st.success(f"✅ Hojas con promedio: {resultados['hojas_con_promedio']}")
+                    with col6:
+                        st.warning(f"⚠️ Hojas sin promedio: {resultados['hojas_sin_promedio']}")
                     
                     # Guardar resultados
                     with st.spinner("💾 Guardando resultados..."):
@@ -301,13 +465,9 @@ def main():
                             st.success("✅ Resultados guardados en Google Sheets")
                     
                     # Mostrar algunos promedios individuales
-                    with st.expander("📋 Ver promedios individuales"):
+                    with st.expander("📋 Ver promedios individuales", expanded=True):
                         for i, (nombre, promedio) in enumerate(zip(resultados['nombres_hojas'], resultados['promedios_individuales'])):
-                            if i < 10:  # Mostrar solo los primeros 10
-                                st.write(f"**{nombre}**: ${promedio:,.2f} MXN")
-                        
-                        if len(resultados['promedios_individuales']) > 10:
-                            st.info(f"... y {len(resultados['promedios_individuales']) - 10} más")
+                            st.write(f"**{nombre}**: ${promedio:,.2f} MXN")
         
         elif funcion == "Solo Mostrar Datos":
             try:
@@ -323,67 +483,36 @@ def main():
                 
             except Exception as e:
                 st.error(f"❌ Error al conectar: {str(e)}")
+        
+        elif funcion == "Debug: Ver estructura de hojas":
+            debug_hojas(client, SPREADSHEET_ID_ORIGEN)
     
     else:
         # PANTALLA DE INICIO
         st.markdown("""
-        ## 🎯 Bienvenido al Sistema de Análisis de Precios Mérida
+        ## 🎯 Bienvenido al Sistema de Análisis de Precios Mérida - v2.0
         
-        ### 📋 ¿Qué hace esta aplicación?
+        ### 🆕 ¿Qué hay de nuevo?
         
-        - ✅ **Calcula automáticamente** el promedio de promedios de las últimas 30 hojas
-        - ✅ **Extrae los valores** de "Promedio:" de cada hoja de cálculo
-        - ✅ **Guarda los resultados** en tu Google Sheet destino
-        - ✅ **Muestra métricas** en tiempo real con gráficos
+        - **🔍 Búsqueda inteligente**: Detecta "Promedio:" en diferentes formatos
+        - **📊 Análisis avanzado**: Busca en celdas adyacentes y en toda la hoja
+        - **⚡ Opciones configurables**: Ajusta umbrales y métodos de búsqueda
+        - **🐛 Modo Debug**: Analiza la estructura de tus hojas
         
         ### 🚀 ¿Cómo usar?
         
         1. **Configura los IDs** de tus Google Sheets en el sidebar ←
         2. **Selecciona** la operación deseada
-        3. **Haz clic** en "Ejecutar Análisis"
-        4. **Espera** a que se procesen las hojas
-        5. **Revisa** los resultados en esta pantalla
+        3. **Ajusta opciones** si es necesario
+        4. **Haz clic** en "Ejecutar Análisis"
+        5. **Revisa** los resultados y el feedback en el sidebar
         
-        ### 📊 IDs de Google Sheets:
+        ### 💡 Consejos:
         
-        - **📋 Origen**: Donde están tus datos diarios (hojas por fecha)
-        - **💾 Destino**: Donde se guardarán los resultados del cálculo
-        
-        ### ⚠️ Requisitos:
-        
-        - Credenciales de Google API configuradas en Streamlit Secrets
-        - Permisos de lectura en el spreadsheet origen
-        - Permisos de escritura en el spreadsheet destino
-        - Conexión a internet estable
+        - Usa **"Debug: Ver estructura de hojas"** si no encuentra los promedios
+        - Ajusta los **umbrales** si los valores están fuera del rango esperado
+        - Revisa el **sidebar** para ver el progreso en tiempo real
         """)
-        
-        # Información sobre cómo configurar Secrets
-        with st.expander("🔐 Configuración de Secrets en Streamlit"):
-            st.markdown("""
-            ### Cómo configurar las credenciales de Google API:
-            
-            1. Ve a [Google Cloud Console](https://console.cloud.google.com/)
-            2. Crea un proyecto o selecciona uno existente
-            3. Habilita **Google Sheets API** y **Google Drive API**
-            4. Ve a "Credenciales" → "Crear credenciales" → "Cuenta de servicio"
-            5. Descarga el archivo JSON de la cuenta de servicio
-            6. En Streamlit Cloud, ve a la configuración de tu app
-            7. En la pestaña "Secrets", pega el contenido del JSON con el formato:
-            
-            ```toml
-            [google_credentials]
-            type = "service_account"
-            project_id = "tu-project-id"
-            private_key_id = "tu-private-key-id"
-            private_key = "-----BEGIN PRIVATE KEY-----\\ntu-clave-privada-completa-aqui\\n-----END PRIVATE KEY-----\\n"
-            client_email = "tu-email@tu-proyecto.iam.gserviceaccount.com"
-            client_id = "tu-client-id"
-            auth_uri = "https://accounts.google.com/o/oauth2/auth"
-            token_uri = "https://oauth2.googleapis.com/token"
-            auth_provider_x509_cert_url = "https://www.googleapis.com/oauth2/v1/certs"
-            client_x509_cert_url = "https://www.googleapis.com/robot/v1/metadata/x509/tu-email%40tu-proyecto.iam.gserviceaccount.com"
-            ```
-            """)
 
 # =============================================================================
 # EJECUCIÓN DE LA APLICACIÓN
@@ -393,11 +522,11 @@ if __name__ == "__main__":
         main()
     except Exception as e:
         st.error(f"❌ Error inesperado: {str(e)}")
-        st.info("🔄 Por favor recarga la página (Ctrl + F5)")
+        st.info("🔄 Por favor recarga la página")
 
 # =============================================================================
 # FOOTER
 # =============================================================================
 st.markdown("---")
 st.caption(f"📅 Última actualización: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-st.caption("⚡ Powered by Streamlit + Google Sheets API")
+st.caption("⚡ Powered by Streamlit + Google Sheets API | 🆕 v2.0 con búsqueda inteligente")
