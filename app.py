@@ -1,19 +1,26 @@
 import streamlit as st
 import pandas as pd
-import requests
+import numpy as np
 from datetime import datetime
 from urllib.parse import urlparse, parse_qs
 
 # Configuración de la página
 st.set_page_config(
-    page_title="Sistema de Visualización de Datos",
-    page_icon="📊",
+    page_title="Sistema de Análisis de Precios",
+    page_icon="💰",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="collapsed"
 )
 
+# Ocultar la barra lateral
+st.markdown("""
+    <style>
+        .css-1d391kg {display: none;}
+    </style>
+""", unsafe_allow_html=True)
+
 # Título de la aplicación
-st.title("📊 Sistema de Visualización de Datos por Ubicación y Fecha")
+st.title("💰 Sistema de Análisis de Precios por Ubicación")
 
 # URLs de las hojas de cálculo
 SHEET_URLS = {
@@ -49,23 +56,14 @@ def load_data(url):
             return None
     return None
 
-# Barra lateral con controles
-with st.sidebar:
-    st.header("🔧 Controles")
-    
-    # Selector de ubicación
-    ubicacion = st.radio(
-        "Selecciona la ubicación:",
-        ["Mérida", "Tuxtla"],
-        index=0
-    )
-    
-    st.divider()
-    
-    # Información sobre los datos
-    st.subheader("ℹ️ Información")
-    st.markdown(f"Estás viendo datos de: **{ubicacion}**")
-    st.markdown(f"[Enlace a la hoja original]({SHEET_URLS[ubicacion]})")
+# Selector de ubicación en la página principal
+st.subheader("Selecciona la ubicación:")
+ubicacion = st.radio(
+    "Ubicación:",
+    ["Mérida", "Tuxtla"],
+    index=0,
+    horizontal=True
+)
 
 # Cargar datos según la ubicación seleccionada
 with st.spinner(f"Cargando datos de {ubicacion}..."):
@@ -75,8 +73,10 @@ if df is not None:
     # Limpiar nombres de columnas (eliminar espacios extra)
     df.columns = df.columns.str.strip()
     
-    # Identificar columnas de fecha
+    # Identificar columnas de fecha y precio automáticamente
     date_columns = []
+    price_columns = []
+    
     for col in df.columns:
         # Verificar si la columna contiene fechas
         if df[col].dtype == 'object':
@@ -86,28 +86,50 @@ if df is not None:
                 date_columns.append(col)
             except:
                 pass
+        
+        # Verificar si la columna contiene precios (números)
+        if np.issubdtype(df[col].dtype, np.number):
+            # Verificar si el nombre de la columna sugiere que es un precio
+            if any(word in col.lower() for word in ['precio', 'price', 'costo', 'cost', 'valor', 'value']):
+                price_columns.append(col)
+    
+    # Si no se detectan columnas de precio, usar todas las columnas numéricas
+    if not price_columns:
+        price_columns = df.select_dtypes(include=[np.number]).columns.tolist()
     
     # Si no se detectan columnas de fecha, buscar manualmente
     if not date_columns:
-        # Buscar columnas con nombres que sugieran fechas
-        date_like_columns = [col for col in df.columns if any(word in col.lower() for word in ['fecha', 'date', 'day', 'time'])]
-        if date_like_columns:
-            date_columns = date_like_columns
+        date_columns = [col for col in df.columns if any(word in col.lower() for word in ['fecha', 'date', 'day', 'time'])]
     
-    # Mostrar controles de fecha si hay columnas de fecha
-    if date_columns:
-        st.sidebar.divider()
-        st.sidebar.subheader("📅 Filtros de Fecha")
-        
-        # Seleccionar columna de fecha
-        fecha_col = st.sidebar.selectbox(
-            "Selecciona la columna de fecha:",
-            date_columns,
-            index=0
-        )
-        
-        # Convertir a formato de fecha
+    # Mostrar selectores de columna
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if date_columns:
+            fecha_col = st.selectbox(
+                "Selecciona la columna de fecha:",
+                date_columns,
+                index=0
+            )
+        else:
+            st.warning("No se detectaron columnas de fecha en el dataset.")
+            fecha_col = None
+    
+    with col2:
+        if price_columns:
+            precio_col = st.selectbox(
+                "Selecciona la columna de precio:",
+                price_columns,
+                index=0
+            )
+        else:
+            st.error("No se detectaron columnas de precio en el dataset.")
+            precio_col = None
+    
+    # Si tenemos columna de fecha, procesar
+    if fecha_col:
         try:
+            # Convertir a formato de fecha
             df[fecha_col] = pd.to_datetime(df[fecha_col], errors='coerce')
             
             # Obtener rango de fechas disponible
@@ -121,7 +143,7 @@ if df is not None:
                 max_date = max_date.date()
                 
                 # Selector de rango de fechas
-                selected_dates = st.sidebar.date_input(
+                selected_dates = st.date_input(
                     "Selecciona el rango de fechas:",
                     value=(min_date, max_date),
                     min_value=min_date,
@@ -139,41 +161,67 @@ if df is not None:
                     mask = (df[fecha_col] >= start_datetime) & (df[fecha_col] <= end_datetime)
                     df = df.loc[mask]
         except Exception as e:
-            st.sidebar.error(f"No se pudieron procesar las fechas: {e}")
+            st.error(f"No se pudieron procesar las fechas: {e}")
     
-    # Mostrar estadísticas
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("Total de registros", df.shape[0])
-    with col2:
-        st.metric("Total de columnas", df.shape[1])
-    with col3:
-        st.metric("Valores nulos", df.isnull().sum().sum())
-    with col4:
-        st.metric("Memoria utilizada", f"{df.memory_usage(deep=True).sum() / 1024 / 1024:.2f} MB")
+    # Mostrar estadísticas de precios si tenemos columna de precio
+    if precio_col:
+        st.divider()
+        st.subheader("📊 Información de Data Reset - Análisis de Precios")
+        
+        # Calcular métricas
+        precio_minimo = df[precio_col].min()
+        precio_maximo = df[precio_col].max()
+        suma_precios = df[precio_col].sum()
+        cantidad_registros = df[precio_col].count()
+        promedio_diario = suma_precios / cantidad_registros if cantidad_registros > 0 else 0
+        
+        # Mostrar métricas en columnas
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("Precio Mínimo del Día", f"${precio_minimo:,.2f}")
+        
+        with col2:
+            st.metric("Precio Máximo del Día", f"${precio_maximo:,.2f}")
+        
+        with col3:
+            st.metric("Suma de Todos los Precios", f"${suma_precios:,.2f}")
+        
+        with col4:
+            st.metric("Promedio Diario", f"${promedio_diario:,.2f}")
+        
+        # Mostrar detalles del cálculo
+        with st.expander("📝 Detalles del cálculo"):
+            st.write(f"**Fórmula del promedio:** Suma de precios / Cantidad de registros")
+            st.write(f"**Suma de precios:** ${suma_precios:,.2f}")
+            st.write(f"**Cantidad de registros:** {cantidad_registros:,}")
+            st.write(f"**Cálculo:** ${suma_precios:,.2f} / {cantidad_registros:,} = ${promedio_diario:,.2f}")
+            
+            # Mostrar distribución de precios
+            st.subheader("Distribución de Precios")
+            st.bar_chart(df[precio_col].value_counts().head(10))
     
     # Mostrar todos los datos
+    st.divider()
     st.subheader(f"Todos los datos de {ubicacion}")
     st.dataframe(df, use_container_width=True)
     
     # Mostrar información del dataset
     with st.expander("ℹ️ Información del dataset"):
-        st.subheader("Tipos de datos")
-        st.write(df.dtypes)
+        col1, col2 = st.columns(2)
         
-        st.subheader("Estadísticas descriptivas")
-        st.write(df.describe())
+        with col1:
+            st.subheader("Tipos de datos")
+            st.write(df.dtypes)
+        
+        with col2:
+            st.subheader("Estadísticas descriptivas")
+            st.write(df.describe())
     
     # Opciones de descarga
-    st.sidebar.divider()
-    st.sidebar.subheader("💾 Exportar Datos")
-    
-    # Convertir dataframe a CSV
-    csv = df.to_csv(index=False).encode('utf-8')
-    
-    st.sidebar.download_button(
-        label="Descargar como CSV",
-        data=csv,
+    st.download_button(
+        label="📥 Descargar Datos como CSV",
+        data=df.to_csv(index=False).encode('utf-8'),
         file_name=f"datos_{ubicacion.lower()}.csv",
         mime="text/csv",
     )
@@ -183,7 +231,7 @@ else:
 # Pie de página
 st.divider()
 st.markdown(
-    "<div style='text-align: center; color: gray;'>Sistema de visualización de datos • "
+    "<div style='text-align: center; color: gray;'>Sistema de análisis de precios • "
     f"Datos de {ubicacion} • {datetime.now().strftime('%Y-%m-%d %H:%M')}</div>",
     unsafe_allow_html=True
 )
