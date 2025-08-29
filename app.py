@@ -5,9 +5,13 @@ from datetime import datetime
 import time
 import pandas as pd
 import numpy as np
+import os
+
+# SOLUCIÓN: Deshabilitar el watcher de páginas para evitar el error
+os.environ["STREAMLIT_SERVER_ENABLE_STATIC_FILE_WATCHING"] = "false"
 
 # =============================================================================
-# CONFIGURACIÓN COMPLETA DE LA APLICACIÓN (REEMPLAZA .streamlit/config.toml)
+# CONFIGURACIÓN COMPLETA DE LA APLICACIÓN
 # =============================================================================
 st.set_page_config(
     page_title="Sistema de Análisis Mérida",
