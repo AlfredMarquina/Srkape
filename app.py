@@ -163,7 +163,7 @@ if client:
         sheet_names = list(sheets_dict.keys())
         
         # Mostrar selector de hojas en sidebar
-        st.sidebar.header("📋 Selecciona Hoja")
+        st.sidebar.header("📋 Selecciona Dia")
         selected_sheet_name = st.sidebar.selectbox(
             "Hoja:",
             sheet_names,
@@ -273,3 +273,4 @@ st.markdown(
     f"{datetime.now().strftime('%Y-%m-%d %H:%M')}</div>",
     unsafe_allow_html=True
 )
+
