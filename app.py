@@ -1,222 +1,180 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
+import gspread
+from google.oauth2 import service_account
+from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
-from urllib.parse import urlparse, parse_qs
+import json
 
 # Configuración de la página
 st.set_page_config(
-    page_title="Sistema de Análisis de Precios Multi-Hojas",
-    page_icon="💰",
+    page_title="Sistema de Hojas Múltiples",
+    page_icon="📑",
     layout="wide",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="expanded"
 )
-
-# Ocultar la barra lateral
-st.markdown("""
-    <style>
-        .css-1d391kg {display: none;}
-    </style>
-""", unsafe_allow_html=True)
 
 # Título de la aplicación
-st.title("💰 Sistema de Análisis de Precios Multi-Hojas")
+st.title("📑 Sistema de Navegación entre Hojas de Cálculo")
 
-# URLs de todas las hojas de cálculo disponibles
+# URLs de las hojas de cálculo
 SHEET_URLS = {
-    "Mérida - Hoja 1": "https://docs.google.com/spreadsheets/d/13tPaaJCX4o4HkxrRdPiuc5NDP3XhrJuvKdq83Eh7-KU/edit?gid=1252923180#gid=1252923180",
-    "Mérida - Hoja 2": "https://docs.google.com/spreadsheets/d/13tPaaJCX4o4HkxrRdPiuc5NDP3XhrJuvKdq83Eh7-KU/edit?gid=0",  # Ejemplo con diferente gid
-    "Tuxtla - Hoja Principal": "https://docs.google.com/spreadsheets/d/1Stux8hR4IlZ879gL7TRbz3uKzputDVwR362VINUr5Ho/edit?gid=1168578915#gid=1168578915",
-    "Tuxtla - Datos Adicionales": "https://docs.google.com/spreadsheets/d/1Stux8hR4IlZ879gL7TRbz3uKzputDVwR362VINUr5Ho/edit?gid=1",  # Ejemplo con diferente gid
+    "Mérida": "https://docs.google.com/spreadsheets/d/13tPaaJCX4o4HkxrRdPiuc5NDP3XhrJuvKdq83Eh7-KU/edit?gid=56875334#gid=56875334",
+    "Tuxtla": "https://docs.google.com/spreadsheets/d/1Stux8hR4IlZ879gL7TRbz3uKzputDVwR362VINUr5Ho/edit?gid=1168578915#gid=1168578915"
 }
 
-# Función para convertir URL de Google Sheets a formato CSV de exportación
-def convert_google_sheet_url(url):
-    parsed_url = urlparse(url)
-    path_parts = parsed_url.path.split('/')
-    d_index = path_parts.index('d') if 'd' in path_parts else -1
-    
-    if d_index != -1 and len(path_parts) > d_index + 1:
-        sheet_id = path_parts[d_index + 1]
+# Configuración para acceso a Google Sheets
+def setup_gspread():
+    try:
+        # Intenta cargar credenciales desde secrets de Streamlit
+        creds_dict = st.secrets["gcp_service_account"]
+        creds = service_account.Credentials.from_service_account_info(creds_dict, scopes=[
+            "https://spreadsheets.google.com/feeds",
+            "https://www.googleapis.com/auth/drive"
+        ])
+        return gspread.authorize(creds)
+    except:
+        st.warning("""
+        **Configuración necesaria:** 
+        Para acceder a todas las hojas, necesitas configurar las credenciales de Google Service Account.
         
-        # Obtener el gid de los parámetros de consulta
-        query_params = parse_qs(parsed_url.query)
-        gid = query_params.get('gid', ['0'])[0]
+        1. Ve a Google Cloud Console y crea una Service Account
+        2. Descarga el JSON de credenciales
+        3. En Streamlit, ve a Settings → Secrets y agrega las credenciales
+        """)
+        return None
+
+# Función para obtener todas las hojas de un spreadsheet
+def get_all_sheets(spreadsheet_url, client):
+    try:
+        spreadsheet = client.open_by_url(spreadsheet_url)
+        worksheets = spreadsheet.worksheets()
+        return {f"{ws.title} (ID: {ws.id})": ws for ws in worksheets}
+    except Exception as e:
+        st.error(f"Error al acceder al spreadsheet: {e}")
+        return None
+
+# Función para obtener datos de una hoja específica
+def get_sheet_data(worksheet):
+    try:
+        data = worksheet.get_all_records()
+        df = pd.DataFrame(data)
+        return df
+    except Exception as e:
+        st.error(f"Error al obtener datos: {e}")
+        return None
+
+# Función alternativa usando pandas directamente (sin autenticación)
+def get_sheet_data_fallback(spreadsheet_url, gid=None):
+    try:
+        # Convertir URL a formato CSV de exportación
+        if 'gid=' in spreadsheet_url:
+            base_url = spreadsheet_url.split('gid=')[0]
+            gid = spreadsheet_url.split('gid=')[1]
+            csv_url = f"{base_url}export?format=csv&gid={gid}"
+        else:
+            csv_url = spreadsheet_url.replace('/edit', '/export?format=csv')
         
-        return f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
-    return None
+        df = pd.read_csv(csv_url)
+        return df
+    except Exception as e:
+        st.error(f"Error al cargar datos: {e}")
+        return None
 
-# Función para cargar datos desde Google Sheets
-@st.cache_data(ttl=3600)  # Cachear datos por 1 hora
-def load_data(url):
-    csv_url = convert_google_sheet_url(url)
-    if csv_url:
-        try:
-            return pd.read_csv(csv_url)
-        except Exception as e:
-            st.error(f"Error al cargar los datos: {e}")
-            return None
-    return None
+# Selector de ubicación
+st.sidebar.header("📍 Selecciona Ubicación")
+ubicacion = st.sidebar.radio("Ubicación:", ["Mérida", "Tuxtla"], index=0)
 
-# Selector de hoja en la página principal
-st.subheader("Selecciona la hoja para analizar:")
-hoja_seleccionada = st.selectbox(
-    "Hoja:",
-    list(SHEET_URLS.keys()),
-    index=0
-)
+# Intentar autenticar con Google Sheets
+client = setup_gspread()
 
-# Obtener ubicación basada en el nombre de la hoja seleccionada
-if "Mérida" in hoja_seleccionada:
-    ubicacion = "Mérida"
-elif "Tuxtla" in hoja_seleccionada:
-    ubicacion = "Tuxtla"
-else:
-    ubicacion = hoja_seleccionada
-
-# Cargar datos según la hoja seleccionada
-with st.spinner(f"Cargando datos de {hoja_seleccionada}..."):
-    df = load_data(SHEET_URLS[hoja_seleccionada])
-
-if df is not None:
-    # Limpiar nombres de columnas (eliminar espacios extra)
-    df.columns = df.columns.str.strip()
+if client:
+    # Obtener todas las hojas del spreadsheet seleccionado
+    sheets_dict = get_all_sheets(SHEET_URLS[ubicacion], client)
     
-    # Identificar columnas de precio automáticamente
-    price_columns = []
-    
-    for col in df.columns:
-        # Verificar si la columna contiene precios (números)
-        if np.issubdtype(df[col].dtype, np.number):
-            # Verificar si el nombre de la columna sugiere que es un precio
-            if any(word in col.lower() for word in ['precio', 'price', 'costo', 'cost', 'valor', 'value']):
-                price_columns.append(col)
-    
-    # Si no se detectan columnas de precio, usar todas las columnas numéricas
-    if not price_columns:
-        price_columns = df.select_dtypes(include=[np.number]).columns.tolist()
-    
-    # Mostrar información de la hoja seleccionada
-    st.success(f"📋 Hoja seleccionada: **{hoja_seleccionada}**")
-    st.info(f"📊 Total de registros: **{len(df):,}** | 📈 Total de columnas: **{len(df.columns)}**")
-    
-    # Mostrar selector de columna de precio
-    if price_columns:
-        precio_col = st.selectbox(
-            "Selecciona la columna de precio para analizar:",
-            price_columns,
-            index=0
+    if sheets_dict:
+        # Obtener nombres de hojas
+        sheet_names = list(sheets_dict.keys())
+        
+        # Mostrar selector de hojas en sidebar
+        st.sidebar.header("📋 Selecciona Hoja")
+        selected_sheet_name = st.sidebar.selectbox(
+            "Hoja:",
+            sheet_names,
+            index=len(sheet_names)-1  # Última hoja por defecto
         )
         
-        # Mostrar estadísticas de precios
-        st.divider()
-        st.subheader(f"📊 Análisis de Precios - {hoja_seleccionada}")
+        # Obtener datos de la hoja seleccionada
+        selected_sheet = sheets_dict[selected_sheet_name]
+        df = get_sheet_data(selected_sheet)
         
-        # Calcular métricas
-        precio_minimo = df[precio_col].min()
-        precio_maximo = df[precio_col].max()
-        suma_precios = df[precio_col].sum()
-        cantidad_registros = df[precio_col].count()
-        promedio = suma_precios / cantidad_registros if cantidad_registros > 0 else 0
-        
-        # Mostrar métricas en columnas
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            st.metric("Precio Mínimo", f"${precio_minimo:,.2f}")
-        
-        with col2:
-            st.metric("Precio Máximo", f"${precio_maximo:,.2f}")
-        
-        with col3:
-            st.metric("Suma de Todos los Precios", f"${suma_precios:,.2f}")
-        
-        with col4:
-            st.metric("Promedio General", f"${promedio:,.2f}")
-        
-        # Mostrar detalles del cálculo
-        with st.expander("📝 Detalles del cálculo del promedio"):
-            st.write(f"**Fórmula del promedio:** Suma de precios / Cantidad de registros")
-            st.write(f"**Suma de precios:** ${suma_precios:,.2f}")
-            st.write(f"**Cantidad de registros:** {cantidad_registros:,}")
-            st.write(f"**Cálculo:** ${suma_precios:,.2f} / {cantidad_registros:,} = ${promedio:,.2f}")
-        
-        # Mostrar distribución de precios
-        st.subheader("Distribución de Precios")
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.bar_chart(df[precio_col].value_counts().head(15))
-        
-        with col2:
-            # Mostrar estadísticas adicionales
-            st.write("**Estadísticas adicionales:**")
-            st.write(f"**Mediana:** ${df[precio_col].median():,.2f}")
-            st.write(f"**Desviación estándar:** ${df[precio_col].std():,.2f}")
-            st.write(f"**Rango intercuartílico:** ${df[precio_col].quantile(0.75) - df[precio_col].quantile(0.25):,.2f}")
-            st.write(f"**Valores únicos:** {df[precio_col].nunique()}")
-        
-        # Mostrar los 10 precios más altos y más bajos
-        st.subheader("Precios Extremos")
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.write("**10 Precios Más Bajos:**")
-            st.dataframe(df.nsmallest(10, precio_col)[[precio_col]].reset_index(drop=True), height=300)
-        
-        with col2:
-            st.write("**10 Precios Más Altos:**")
-            st.dataframe(df.nlargest(10, precio_col)[[precio_col]].reset_index(drop=True), height=300)
-    
+        if df is not None:
+            # Mostrar información de la hoja
+            st.header(f"📊 Datos de {ubicacion} - Hoja: {selected_sheet.title}")
+            st.info(f"📋 Total de registros: {len(df)} | 📄 Total de columnas: {len(df.columns)}")
+            
+            # Mostrar datos
+            st.dataframe(df, use_container_width=True, height=600)
+            
+            # Mostrar estadísticas básicas
+            with st.expander("📈 Estadísticas Descriptivas"):
+                st.write(df.describe())
+            
+            # Opciones de descarga
+            csv = df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="📥 Descargar CSV",
+                data=csv,
+                file_name=f"{ubicacion}_{selected_sheet.title}.csv",
+                mime="text/csv"
+            )
     else:
-        st.error("No se detectaron columnas numéricas en esta hoja.")
-    
-    # Mostrar todos los datos
-    st.divider()
-    st.subheader(f"Todos los datos de {hoja_seleccionada}")
-    st.dataframe(df, use_container_width=True)
-    
-    # Mostrar información del dataset
-    with st.expander("ℹ️ Información del dataset"):
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.subheader("Tipos de datos")
-            st.write(df.dtypes)
-        
-        with col2:
-            st.subheader("Estadísticas descriptivas")
-            st.write(df.describe())
-    
-    # Opciones de descarga
-    st.download_button(
-        label="📥 Descargar Datos como CSV",
-        data=df.to_csv(index=False).encode('utf-8'),
-        file_name=f"datos_{hoja_seleccionada.lower().replace(' ', '_')}.csv",
-        mime="text/csv",
-    )
+        st.error("No se pudieron cargar las hojas. Verifica los permisos.")
 else:
-    st.error("No se pudieron cargar los datos. Verifica que la hoja de cálculo sea pública.")
+    # Modo fallback: usar acceso público a la hoja predeterminada
+    st.warning("Modo de acceso básico. Mostrando última hoja disponible públicamente.")
+    
+    # Obtener datos de la hoja predeterminada
+    df = get_sheet_data_fallback(SHEET_URLS[ubicacion])
+    
+    if df is not None:
+        st.header(f"📊 Datos de {ubicacion} (Última Hoja Disponible)")
+        st.info(f"📋 Total de registros: {len(df)} | 📄 Total de columnas: {len(df.columns)}")
+        
+        # Mostrar datos
+        st.dataframe(df, use_container_width=True, height=600)
+        
+        # Mostrar estadísticas básicas
+        with st.expander("📈 Estadísticas Descriptivas"):
+            st.write(df.describe())
+        
+        # Opciones de descarga
+        csv = df.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="📥 Descargar CSV",
+            data=csv,
+            file_name=f"{ubicacion}_datos.csv",
+            mime="text/csv"
+        )
 
-# Información de todas las hojas disponibles
-st.divider()
-st.subheader("📋 Hojas Disponibles")
-col1, col2 = st.columns(2)
+# Información adicional en el sidebar
+st.sidebar.header("ℹ️ Información")
+st.sidebar.info("""
+**Instrucciones:**
+1. Selecciona la ubicación (Mérida o Tuxtla)
+2. Elige la hoja específica que deseas visualizar
+3. Explora los datos en la vista principal
+4. Descarga los datos si es necesario
+""")
 
-with col1:
-    st.write("**Hojas de Mérida:**")
-    for hoja in [h for h in SHEET_URLS.keys() if "Mérida" in h]:
-        st.write(f"- {hoja}")
-
-with col2:
-    st.write("**Hojas de Tuxtla:**")
-    for hoja in [h for h in SHEET_URLS.keys() if "Tuxtla" in h]:
-        st.write(f"- {hoja}")
+st.sidebar.header("🔗 Enlaces Directos")
+for name, url in SHEET_URLS.items():
+    st.sidebar.markdown(f"- [{name}]({url})")
 
 # Pie de página
 st.divider()
 st.markdown(
-    "<div style='text-align: center; color: gray;'>Sistema de análisis de precios multi-hojas • "
-    f"{hoja_seleccionada} • {datetime.now().strftime('%Y-%m-%d %H:%M')}</div>",
+    "<div style='text-align: center; color: gray;'>Sistema de navegación de hojas • "
+    f"{datetime.now().strftime('%Y-%m-%d %H:%M')}</div>",
     unsafe_allow_html=True
 )
