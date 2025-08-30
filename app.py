@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import gspread
 from google.oauth2 import service_account
-from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 import json
 
@@ -19,37 +18,33 @@ st.title("📑 Sistema de Navegación entre Hojas de Cálculo")
 
 # URLs de las hojas de cálculo
 SHEET_URLS = {
-    "Mérida": "https://docs.google.com/spreadsheets/d/13tPaaJCX4o4HkxrRdPiuc5NDP3XhrJuvKdq83Eh7-KU/edit?gid=56875334#gid=56875334",
-    "Tuxtla": "https://docs.google.com/spreadsheets/d/1Stux8hR4IlZ879gL7TRbz3uKzputDVwR362VINUr5Ho/edit?gid=1168578915#gid=1168578915"
+    "Mérida": "13tPaaJCX4o4HkxrRdPiuc5NDP3XhrJuvKdq83Eh7-KU",
+    "Tuxtla": "1Stux8hR4IlZ879gL7TRbz3uKzputDVwR362VINUr5Ho"
 }
 
-# Configuración para acceso a Google Sheets
+# Configuración para acceso a Google Sheets usando Secrets
 def setup_gspread():
     try:
-        # Intenta cargar credenciales desde secrets de Streamlit
+        # Cargar credenciales desde Streamlit Secrets
         creds_dict = st.secrets["gcp_service_account"]
-        creds = service_account.Credentials.from_service_account_info(creds_dict, scopes=[
-            "https://spreadsheets.google.com/feeds",
-            "https://www.googleapis.com/auth/drive"
-        ])
+        creds = service_account.Credentials.from_service_account_info(
+            creds_dict,
+            scopes=[
+                "https://spreadsheets.google.com/feeds",
+                "https://www.googleapis.com/auth/drive"
+            ]
+        )
         return gspread.authorize(creds)
-    except:
-        st.warning("""
-        **Configuración necesaria:** 
-        Para acceder a todas las hojas, necesitas configurar las credenciales de Google Service Account.
-        
-        1. Ve a Google Cloud Console y crea una Service Account
-        2. Descarga el JSON de credenciales
-        3. En Streamlit, ve a Settings → Secrets y agrega las credenciales
-        """)
+    except Exception as e:
+        st.error(f"Error de autenticación: {e}")
         return None
 
 # Función para obtener todas las hojas de un spreadsheet
-def get_all_sheets(spreadsheet_url, client):
+def get_all_sheets(spreadsheet_id, client):
     try:
-        spreadsheet = client.open_by_url(spreadsheet_url)
+        spreadsheet = client.open_by_key(spreadsheet_id)
         worksheets = spreadsheet.worksheets()
-        return {f"{ws.title} (ID: {ws.id})": ws for ws in worksheets}
+        return {f"{ws.title}": ws for ws in worksheets}
     except Exception as e:
         st.error(f"Error al acceder al spreadsheet: {e}")
         return None
@@ -64,33 +59,32 @@ def get_sheet_data(worksheet):
         st.error(f"Error al obtener datos: {e}")
         return None
 
-# Función alternativa usando pandas directamente (sin autenticación)
-def get_sheet_data_fallback(spreadsheet_url, gid=None):
+# Función alternativa usando acceso público
+def get_public_sheet_data(spreadsheet_id, sheet_name=None):
     try:
-        # Convertir URL a formato CSV de exportación
-        if 'gid=' in spreadsheet_url:
-            base_url = spreadsheet_url.split('gid=')[0]
-            gid = spreadsheet_url.split('gid=')[1]
-            csv_url = f"{base_url}export?format=csv&gid={gid}"
+        if sheet_name:
+            url = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/gviz/tq?tqx=out:csv&sheet={sheet_name}"
         else:
-            csv_url = spreadsheet_url.replace('/edit', '/export?format=csv')
+            url = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/export?format=csv"
         
-        df = pd.read_csv(csv_url)
+        df = pd.read_csv(url)
         return df
     except Exception as e:
-        st.error(f"Error al cargar datos: {e}")
+        st.error(f"Error al cargar datos públicos: {e}")
         return None
 
-# Selector de ubicación
+# Obtener cliente de Google Sheets
+client = setup_gspread()
+
+# Selector de ubicación en el sidebar
 st.sidebar.header("📍 Selecciona Ubicación")
 ubicacion = st.sidebar.radio("Ubicación:", ["Mérida", "Tuxtla"], index=0)
 
-# Intentar autenticar con Google Sheets
-client = setup_gspread()
+spreadsheet_id = SHEET_URLS[ubicacion]
 
 if client:
-    # Obtener todas las hojas del spreadsheet seleccionado
-    sheets_dict = get_all_sheets(SHEET_URLS[ubicacion], client)
+    # Modo autenticado - acceso completo a todas las hojas
+    sheets_dict = get_all_sheets(spreadsheet_id, client)
     
     if sheets_dict:
         # Obtener nombres de hojas
@@ -108,45 +102,55 @@ if client:
         selected_sheet = sheets_dict[selected_sheet_name]
         df = get_sheet_data(selected_sheet)
         
-        if df is not None:
+        if df is not None and not df.empty:
             # Mostrar información de la hoja
-            st.header(f"📊 Datos de {ubicacion} - Hoja: {selected_sheet.title}")
-            st.info(f"📋 Total de registros: {len(df)} | 📄 Total de columnas: {len(df.columns)}")
+            st.header(f"📊 {ubicacion} - {selected_sheet_name}")
+            st.info(f"📋 Registros: {len(df)} | 📄 Columnas: {len(df.columns)}")
             
             # Mostrar datos
-            st.dataframe(df, use_container_width=True, height=600)
+            st.dataframe(df, use_container_width=True, height=500)
             
-            # Mostrar estadísticas básicas
+            # Estadísticas básicas
             with st.expander("📈 Estadísticas Descriptivas"):
-                st.write(df.describe())
+                numeric_cols = df.select_dtypes(include=['number']).columns
+                if len(numeric_cols) > 0:
+                    st.write(df[numeric_cols].describe())
+                else:
+                    st.write("No hay columnas numéricas para mostrar estadísticas.")
             
             # Opciones de descarga
             csv = df.to_csv(index=False).encode('utf-8')
             st.download_button(
                 label="📥 Descargar CSV",
                 data=csv,
-                file_name=f"{ubicacion}_{selected_sheet.title}.csv",
+                file_name=f"{ubicacion}_{selected_sheet_name}.csv",
                 mime="text/csv"
             )
+        else:
+            st.warning("La hoja seleccionada está vacía o no se pudieron cargar los datos.")
     else:
         st.error("No se pudieron cargar las hojas. Verifica los permisos.")
 else:
-    # Modo fallback: usar acceso público a la hoja predeterminada
-    st.warning("Modo de acceso básico. Mostrando última hoja disponible públicamente.")
+    # Modo público - intentar cargar la última hoja
+    st.warning("🔐 Modo de acceso básico. Usando acceso público.")
     
-    # Obtener datos de la hoja predeterminada
-    df = get_sheet_data_fallback(SHEET_URLS[ubicacion])
+    # Intentar cargar datos de forma pública
+    df = get_public_sheet_data(spreadsheet_id)
     
-    if df is not None:
-        st.header(f"📊 Datos de {ubicacion} (Última Hoja Disponible)")
-        st.info(f"📋 Total de registros: {len(df)} | 📄 Total de columnas: {len(df.columns)}")
+    if df is not None and not df.empty:
+        st.header(f"📊 {ubicacion} - Última Hoja Disponible")
+        st.info(f"📋 Registros: {len(df)} | 📄 Columnas: {len(df.columns)}")
         
         # Mostrar datos
-        st.dataframe(df, use_container_width=True, height=600)
+        st.dataframe(df, use_container_width=True, height=500)
         
-        # Mostrar estadísticas básicas
+        # Estadísticas básicas
         with st.expander("📈 Estadísticas Descriptivas"):
-            st.write(df.describe())
+            numeric_cols = df.select_dtypes(include=['number']).columns
+            if len(numeric_cols) > 0:
+                st.write(df[numeric_cols].describe())
+            else:
+                st.write("No hay columnas numéricas para mostrar estadísticas.")
         
         # Opciones de descarga
         csv = df.to_csv(index=False).encode('utf-8')
@@ -156,20 +160,22 @@ else:
             file_name=f"{ubicacion}_datos.csv",
             mime="text/csv"
         )
+    else:
+        st.error("No se pudieron cargar los datos. Verifica que la hoja sea pública.")
 
 # Información adicional en el sidebar
 st.sidebar.header("ℹ️ Información")
 st.sidebar.info("""
 **Instrucciones:**
-1. Selecciona la ubicación (Mérida o Tuxtla)
-2. Elige la hoja específica que deseas visualizar
-3. Explora los datos en la vista principal
-4. Descarga los datos si es necesario
+1. Selecciona la ubicación
+2. Elige la hoja específica
+3. Explora los datos
+4. Descarga si es necesario
 """)
 
 st.sidebar.header("🔗 Enlaces Directos")
-for name, url in SHEET_URLS.items():
-    st.sidebar.markdown(f"- [{name}]({url})")
+for name, sheet_id in SHEET_URLS.items():
+    st.sidebar.markdown(f"- [{name}](https://docs.google.com/spreadsheets/d/{sheet_id}/)")
 
 # Pie de página
 st.divider()
