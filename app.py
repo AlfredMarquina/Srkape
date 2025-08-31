@@ -226,11 +226,11 @@ st.header("🔍 Búsqueda de Hotel")
 hotel_busqueda = st.text_input(
     "Ingresa el nombre del hotel a buscar:",
     placeholder="Ej: Hilton, Marriott, Holiday Inn...",
-    help="Buscará el hotel en las últimas 30 hojas disponibles"
+    help="Buscará el hotel en las últimas 30 Dias disponibles"
 )
 
 if hotel_busqueda and client:
-    with st.spinner(f"Buscando '{hotel_busqueda}' en las últimas 30 hojas..."):
+    with st.spinner(f"Buscando '{hotel_busqueda}' en los últimos 30 Dias..."):
         resultados, precios_encontrados = search_hotel_in_sheets(client, spreadsheet_id, hotel_busqueda, 30)
     
     if resultados:
@@ -296,7 +296,7 @@ if client:
     if sheets_dict:
         sheet_names = list(sheets_dict.keys())
         
-        st.sidebar.header("📋 Selecciona Hoja")
+        st.sidebar.header("📋 Selecciona Dia")
         selected_sheet_name = st.sidebar.selectbox(
             "Hoja:",
             sheet_names,
@@ -366,3 +366,4 @@ st.markdown(
     f"{datetime.now().strftime('%Y-%m-%d %H:%M')}</div>",
     unsafe_allow_html=True
 )
+
