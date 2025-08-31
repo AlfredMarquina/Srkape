@@ -2,19 +2,20 @@ import streamlit as st
 import pandas as pd
 import gspread
 from google.oauth2 import service_account
-from datetime import datetime
+from datetime import datetime, timedelta
 import numpy as np
+import re
 
 # Configuración de la página
 st.set_page_config(
-    page_title="Sistema de Análisis de Precios",
-    page_icon="💰",
+    page_title="Sistema de Análisis de Precios de Hoteles",
+    page_icon="🏨",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
 # Título de la aplicación
-st.title("💰 Sistema de Análisis de Precios")
+st.title("🏨 Sistema de Análisis de Precios de Hoteles")
 
 # IDs de las hojas de cálculo
 SHEET_IDS = {
@@ -25,13 +26,9 @@ SHEET_IDS = {
 # Configuración para acceso a Google Sheets usando Secrets
 def setup_gspread():
     try:
-        # Verificar que los secrets existen
         if 'gcp_service_account' not in st.secrets:
-            st.error("No se encontraron las credenciales en los Secrets.")
-            st.info("Por favor configura las credenciales en Streamlit Secrets")
             return None
             
-        # Cargar credenciales desde Streamlit Secrets
         creds_info = {
             "type": st.secrets["gcp_service_account"]["type"],
             "project_id": st.secrets["gcp_service_account"]["project_id"],
@@ -80,69 +77,140 @@ def get_sheet_data(worksheet):
         st.error(f"Error al obtener datos: {e}")
         return None
 
-# Función para detectar automáticamente la columna de precios
-def detect_price_column(df):
-    # Buscar columnas que probablemente contengan precios
+# Función para detectar automáticamente columnas relevantes
+def detect_columns(df):
+    # Buscar columna de hotel
+    hotel_keywords = ['hotel', 'nombre', 'name', 'establecimiento', 'property']
     price_keywords = ['precio', 'price', 'costo', 'cost', 'valor', 'value', 'monto', 'amount', 'importe']
+    
+    hotel_col = None
+    price_col = None
     
     for col in df.columns:
         col_lower = str(col).lower()
-        # Verificar si el nombre de la columna contiene palabras clave de precio
-        if any(keyword in col_lower for keyword in price_keywords):
-            # Verificar si la columna contiene valores numéricos
-            if pd.api.types.is_numeric_dtype(df[col]) or df[col].astype(str).str.replace(',', '.').str.replace('$', '').str.replace(' ', '').str.isnumeric().any():
-                return col
+        
+        # Detectar columna de hotel
+        if not hotel_col and any(keyword in col_lower for keyword in hotel_keywords):
+            hotel_col = col
+        
+        # Detectar columna de precio
+        if not price_col and any(keyword in col_lower for keyword in price_keywords):
+            # Verificar si contiene valores numéricos
+            try:
+                numeric_test = pd.to_numeric(df[col].astype(str).str.replace(',', '.').str.replace('$', '').str.replace(' ', ''), errors='coerce')
+                if numeric_test.notna().sum() > 0:
+                    price_col = col
+            except:
+                continue
     
-    # Si no se encuentra por nombre, buscar columnas numéricas
-    numeric_cols = df.select_dtypes(include=[np.number]).columns
-    if len(numeric_cols) > 0:
-        return numeric_cols[0]
+    # Si no se detecta por nombre, buscar la primera columna de texto para hotel
+    if not hotel_col:
+        for col in df.columns:
+            if df[col].dtype == 'object' and len(df[col].astype(str).str.strip().unique()) > 1:
+                hotel_col = col
+                break
     
-    # Intentar convertir columnas a numéricas
-    for col in df.columns:
-        try:
-            # Intentar convertir a numérico
-            numeric_series = pd.to_numeric(df[col].astype(str).str.replace(',', '.').str.replace('$', '').str.replace(' ', ''), errors='coerce')
-            if numeric_series.notna().sum() > 0:  # Si hay valores numéricos
-                return col
-        except:
-            continue
+    # Si no se detecta por nombre, buscar la primera columna numérica para precio
+    if not price_col:
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        if len(numeric_cols) > 0:
+            price_col = numeric_cols[0]
     
-    return None
+    return hotel_col, price_col
 
-# Función para calcular métricas de precios
-def calculate_price_metrics(df, price_column):
-    if df.empty or price_column not in df.columns:
+# Función para buscar hotel en múltiples hojas
+def search_hotel_in_sheets(client, spreadsheet_id, hotel_name, max_sheets=30):
+    try:
+        spreadsheet = client.open_by_key(spreadsheet_id)
+        worksheets = spreadsheet.worksheets()
+        
+        # Ordenar hojas por fecha (asumiendo que los nombres contienen fechas)
+        dated_sheets = []
+        for ws in worksheets:
+            sheet_name = ws.title.lower()
+            # Buscar patrones de fecha en el nombre de la hoja
+            date_patterns = [
+                r'\d{2}[-/]\d{2}[-/]\d{4}',  # DD-MM-YYYY
+                r'\d{4}[-/]\d{2}[-/]\d{2}',  # YYYY-MM-DD
+                r'\d{2}[-/]\d{2}[-/]\d{2}',  # DD-MM-YY
+            ]
+            
+            for pattern in date_patterns:
+                match = re.search(pattern, sheet_name)
+                if match:
+                    dated_sheets.append((ws, match.group()))
+                    break
+            else:
+                # Si no encuentra fecha, usar el nombre como está
+                dated_sheets.append((ws, sheet_name))
+        
+        # Ordenar por fecha (las más recientes primero)
+        dated_sheets.sort(key=lambda x: x[1], reverse=True)
+        
+        # Tomar las últimas max_sheets hojas
+        recent_sheets = dated_sheets[:max_sheets]
+        
+        resultados = []
+        precios_encontrados = 0
+        
+        for ws, date_str in recent_sheets:
+            try:
+                df = get_sheet_data(ws)
+                if df is not None and not df.empty:
+                    hotel_col, price_col = detect_columns(df)
+                    
+                    if hotel_col and price_col:
+                        # Buscar el hotel (búsqueda insensible a mayúsculas)
+                        mask = df[hotel_col].astype(str).str.lower().str.contains(hotel_name.lower(), na=False)
+                        hotel_data = df[mask]
+                        
+                        if not hotel_data.empty:
+                            for _, row in hotel_data.iterrows():
+                                try:
+                                    precio = pd.to_numeric(
+                                        str(row[price_col]).replace(',', '.').replace('$', '').replace(' ', ''),
+                                        errors='coerce'
+                                    )
+                                    
+                                    if not pd.isna(precio) and precio > 0:
+                                        resultados.append({
+                                            'hoja': ws.title,
+                                            'hotel': row[hotel_col],
+                                            'precio': precio,
+                                            'fecha_hoja': date_str
+                                        })
+                                        precios_encontrados += 1
+                                except:
+                                    continue
+            except:
+                continue
+        
+        return resultados, precios_encontrados
+        
+    except Exception as e:
+        st.error(f"Error en la búsqueda: {e}")
+        return [], 0
+
+# Función para calcular métricas de los resultados
+def calculate_hotel_metrics(resultados):
+    if not resultados:
         return None
     
-    try:
-        # Limpiar y convertir a numérico
-        price_series = pd.to_numeric(
-            df[price_column].astype(str).str.replace(',', '.').str.replace('$', '').str.replace(' ', ''), 
-            errors='coerce'
-        ).dropna()
-        
-        if len(price_series) == 0:
-            return None
-            
-        precio_min = price_series.min()
-        precio_max = price_series.max()
-        suma_total = price_series.sum()
-        cantidad = len(price_series)
-        promedio = suma_total / cantidad if cantidad > 0 else 0
-        
-        return {
-            'precio_min': precio_min,
-            'precio_max': precio_max,
-            'suma_total': suma_total,
-            'cantidad': cantidad,
-            'promedio': promedio,
-            'valores_validos': len(price_series),
-            'valores_totales': len(df[price_column])
-        }
-    except Exception as e:
-        st.error(f"Error al calcular métricas: {e}")
+    precios = [r['precio'] for r in resultados if r['precio'] > 0]
+    
+    if not precios:
         return None
+    
+    return {
+        'total_hojas_revisadas': len(set(r['hoja'] for r in resultados)),
+        'total_precios_encontrados': len(precios),
+        'precio_minimo': min(precios),
+        'precio_maximo': max(precios),
+        'suma_total': sum(precios),
+        'promedio': sum(precios) / len(precios),
+        'primer_hoja': resultados[0]['hoja'] if resultados else '',
+        'ultima_hoja': resultados[-1]['hoja'] if resultados else ''
+    }
 
 # Selector de ubicación en el sidebar
 st.sidebar.header("📍 Selecciona Ubicación")
@@ -153,124 +221,148 @@ spreadsheet_id = SHEET_IDS[ubicacion]
 # Obtener cliente de Google Sheets
 client = setup_gspread()
 
+# Barra de búsqueda de hoteles
+st.header("🔍 Búsqueda de Hotel")
+hotel_busqueda = st.text_input(
+    "Ingresa el nombre del hotel a buscar:",
+    placeholder="Ej: Hilton, Marriott, Holiday Inn...",
+    help="Buscará el hotel en las últimas 30 hojas disponibles"
+)
+
+if hotel_busqueda and client:
+    with st.spinner(f"Buscando '{hotel_busqueda}' en las últimas 30 hojas..."):
+        resultados, precios_encontrados = search_hotel_in_sheets(client, spreadsheet_id, hotel_busqueda, 30)
+    
+    if resultados:
+        metrics = calculate_hotel_metrics(resultados)
+        
+        if metrics:
+            st.success(f"✅ Encontrados {metrics['total_precios_encontrados']} precios en {metrics['total_hojas_revisadas']} hojas")
+            
+            # Mostrar métricas
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                st.metric("Precio Mínimo", f"${metrics['precio_minimo']:,.2f}")
+            
+            with col2:
+                st.metric("Precio Máximo", f"${metrics['precio_maximo']:,.2f}")
+            
+            with col3:
+                st.metric("Suma Total", f"${metrics['suma_total']:,.2f}")
+            
+            with col4:
+                st.metric("Promedio", f"${metrics['promedio']:,.2f}")
+            
+            # Detalles del cálculo
+            with st.expander("📊 Detalles del análisis"):
+                st.write(f"**Hotel buscado:** {hotel_busqueda}")
+                st.write(f"**Total de hojas revisadas:** {metrics['total_hojas_revisadas']}")
+                st.write(f"**Total de precios encontrados:** {metrics['total_precios_encontrados']}")
+                st.write(f"**Rango de fechas:** {metrics['primer_hoja']} - {metrics['ultima_hoja']}")
+                st.write(f"**Fórmula del promedio:** Suma total / Cantidad de precios")
+                st.write(f"**Cálculo:** ${metrics['suma_total']:,.2f} / {metrics['total_precios_encontrados']} = ${metrics['promedio']:,.2f}")
+            
+            # Mostrar resultados detallados
+            st.subheader("📋 Precios Encontrados")
+            resultados_df = pd.DataFrame(resultados)
+            st.dataframe(
+                resultados_df[['hoja', 'hotel', 'precio', 'fecha_hoja']],
+                use_container_width=True,
+                height=300
+            )
+            
+            # Gráfico de precios por hoja
+            st.subheader("📈 Evolución de Precios")
+            try:
+                chart_data = resultados_df[['hoja', 'precio']].copy()
+                chart_data['hoja'] = chart_data['hoja'].astype(str)
+                st.line_chart(chart_data.set_index('hoja')['precio'])
+            except:
+                st.info("No se pudo generar el gráfico de evolución")
+        
+        else:
+            st.warning("Se encontraron resultados pero no precios válidos.")
+    else:
+        st.warning(f"No se encontró el hotel '{hotel_busqueda}' en las últimas 30 hojas.")
+
+# Sección de análisis de hojas individuales (código anterior)
+st.header("📊 Análisis de Hoja Individual")
+
 if client:
-    # Modo autenticado - acceso completo a todas las hojas
     with st.spinner("Cargando hojas disponibles..."):
         sheets_dict = get_all_sheets(spreadsheet_id, client)
     
     if sheets_dict:
-        # Obtener nombres de hojas
         sheet_names = list(sheets_dict.keys())
         
-        # Mostrar selector de hojas en sidebar
-        st.sidebar.header("📋 Selecciona Dia")
+        st.sidebar.header("📋 Selecciona Hoja")
         selected_sheet_name = st.sidebar.selectbox(
             "Hoja:",
             sheet_names,
             index=len(sheet_names)-1 if sheet_names else 0
         )
         
-        # Obtener datos de la hoja seleccionada
         with st.spinner(f"Cargando {selected_sheet_name}..."):
             selected_sheet = sheets_dict[selected_sheet_name]
             df = get_sheet_data(selected_sheet)
         
         if df is not None and not df.empty:
-            # Mostrar información de la hoja
-            st.header(f"📊 {ubicacion} - {selected_sheet_name}")
+            st.subheader(f"{selected_sheet_name}")
             
-            # Detectar automáticamente la columna de precios
-            price_column = detect_price_column(df)
+            hotel_col, price_col = detect_columns(df)
             
-            if price_column:
-                st.success(f"✅ Columna de precios detectada: **{price_column}**")
+            if hotel_col and price_col:
+                st.success(f"✅ Columnas detectadas: Hotel → {hotel_col}, Precio → {price_col}")
                 
-                # Calcular métricas de precios
-                metrics = calculate_price_metrics(df, price_column)
+                # Análisis de precios de la hoja actual
+                try:
+                    df['precio_limpio'] = pd.to_numeric(
+                        df[price_col].astype(str).str.replace(',', '.').str.replace('$', '').str.replace(' ', ''),
+                        errors='coerce'
+                    )
+                    
+                    precios_validos = df['precio_limpio'].dropna()
+                    
+                    if len(precios_validos) > 0:
+                        col1, col2, col3, col4 = st.columns(4)
+                        
+                        with col1:
+                            st.metric("Precio Mínimo", f"${precios_validos.min():,.2f}")
+                        
+                        with col2:
+                            st.metric("Precio Máximo", f"${precios_validos.max():,.2f}")
+                        
+                        with col3:
+                            st.metric("Suma Total", f"${precios_validos.sum():,.2f}")
+                        
+                        with col4:
+                            st.metric("Promedio", f"${precios_validos.mean():,.2f}")
                 
-                if metrics:
-                    # Mostrar métricas de precios
-                    st.subheader("💰 Análisis de Precios")
-                    
-                    col1, col2, col3, col4 = st.columns(4)
-                    
-                    with col1:
-                        st.metric("Precio Mínimo", f"${metrics['precio_min']:,.2f}")
-                    
-                    with col2:
-                        st.metric("Precio Máximo", f"${metrics['precio_max']:,.2f}")
-                    
-                    with col3:
-                        st.metric("Suma Total", f"${metrics['suma_total']:,.2f}")
-                    
-                    with col4:
-                        st.metric("Promedio Diario", f"${metrics['promedio']:,.2f}")
-                    
-                    # Mostrar detalles del cálculo
-                    with st.expander("📝 Detalles del cálculo"):
-                        st.write(f"**Fórmula del promedio:** Suma total / Cantidad de registros")
-                        st.write(f"**Suma total:** ${metrics['suma_total']:,.2f}")
-                        st.write(f"**Cantidad de registros:** {metrics['cantidad']:,}")
-                        st.write(f"**Cálculo:** ${metrics['suma_total']:,.2f} / {metrics['cantidad']:,} = ${metrics['promedio']:,.2f}")
-                        st.write(f"**Valores válidos:** {metrics['valores_validos']:,} de {metrics['valores_totales']:,}")
-                
-                else:
-                    st.warning("No se pudieron calcular las métricas de precios.")
-            else:
-                st.warning("⚠️ No se pudo detectar automáticamente una columna de precios.")
-                st.info("Las columnas disponibles son:")
-                for col in df.columns:
-                    st.write(f"- {col}")
+                except Exception as e:
+                    st.error(f"Error en análisis de precios: {e}")
             
             # Mostrar datos
-            st.subheader("📋 Datos Completos")
             st.dataframe(df, use_container_width=True, height=300)
             
-            # Estadísticas básicas
-            numeric_cols = df.select_dtypes(include=[np.number]).columns
-            if not numeric_cols.empty:
-                with st.expander("📈 Estadísticas de columnas numéricas"):
-                    st.dataframe(df[numeric_cols].describe())
-            
-            # Opciones de descarga
-            csv = df.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="📥 Descargar CSV",
-                data=csv,
-                file_name=f"{ubicacion}_{selected_sheet_name}.csv".replace(" ", "_"),
-                mime="text/csv",
-                use_container_width=True
-            )
         else:
-            st.warning("La hoja seleccionada está vacía o no se pudieron cargar los datos.")
+            st.warning("La hoja seleccionada está vacía.")
     else:
-        st.error("No se pudieron cargar las hojas. Verifica los permisos.")
-else:
-    # Modo público - intentar cargar la hoja principal
-    st.warning("🔐 Usando acceso público. Algunas funciones pueden estar limitadas.")
-    
-    # Para el modo público, necesitaríamos una función alternativa
-    st.info("El modo autenticado no está disponible. Configura los secrets para acceso completo.")
+        st.error("No se pudieron cargar las hojas.")
 
-# Información adicional en el sidebar
+# Información adicional
 st.sidebar.header("ℹ️ Información")
 st.sidebar.info("""
-**Análisis de Precios:**
-- Precio Mínimo: Valor más bajo
-- Precio Máximo: Valor más alto  
-- Suma Total: Suma de todos los precios
-- Promedio Diario: Suma total / Cantidad
+**Búsqueda de Hoteles:**
+- Busca en las últimas 30 hojas
+- Calcula precios mínimo, máximo y promedio
+- Muestra la evolución temporal
 """)
-
-st.sidebar.header("🔗 Enlaces Directos")
-for name, sheet_id in SHEET_IDS.items():
-    st.sidebar.markdown(f"- [{name}](https://docs.google.com/spreadsheets/d/{sheet_id}/)")
 
 # Pie de página
 st.divider()
 st.markdown(
-    "<div style='text-align: center; color: gray;'>Sistema de análisis de precios • "
+    "<div style='text-align: center; color: gray;'>Sistema de análisis de precios de hoteles • "
     f"{datetime.now().strftime('%Y-%m-%d %H:%M')}</div>",
     unsafe_allow_html=True
 )
-
