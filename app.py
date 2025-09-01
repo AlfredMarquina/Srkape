@@ -497,7 +497,7 @@ st.header("📊 Análisis de Hoja Individual")
 
 # Sección de Top 10 Hoteles
 if client:
-    display_top_hotels(client, spreadsheet_id, ubicacion)
+        display_top_hotels(client, spreadsheet_id, ubicacion)
     
     # Opcional: Estadísticas generales
     with st.expander("📈 Ver Estadísticas Generales"):
@@ -579,6 +579,7 @@ st.markdown(
     f"{datetime.now().strftime('%Y-%m-%d %H:%M')}</div>",
     unsafe_allow_html=True
 )
+
 
 
 
