@@ -120,7 +120,7 @@ def detect_columns(df):
     return hotel_col, price_col
 
 # Función para buscar hotel en múltiples hojas
-def search_hotel_in_sheets(client, spreadsheet_id, hotel_name, max_sheets=30):
+def search_hotel_in_sheets(client, spreadsheet_id, hotel_name, max_sheets=90):
     try:
         spreadsheet = client.open_by_key(spreadsheet_id)
         worksheets = spreadsheet.worksheets()
@@ -367,5 +367,6 @@ st.markdown(
     f"{datetime.now().strftime('%Y-%m-%d %H:%M')}</div>",
     unsafe_allow_html=True
 )
+
 
 
