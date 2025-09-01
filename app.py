@@ -498,10 +498,6 @@ st.header("📊 Análisis de Hoja Individual")
 if client:
         display_top_hotels(client, spreadsheet_id, ubicacion)
     
-    # Opcional: Estadísticas generales
-    with st.expander("📈 Ver Estadísticas Generales"):
-        display_hotel_statistics(client, spreadsheet_id)
-        
     with st.spinner("Cargando hojas disponibles..."):
         sheets_dict = get_all_sheets(spreadsheet_id, client)
     
@@ -578,6 +574,7 @@ st.markdown(
     f"{datetime.now().strftime('%Y-%m-%d %H:%M')}</div>",
     unsafe_allow_html=True
 )
+
 
 
 
