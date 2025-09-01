@@ -17,9 +17,9 @@ st.set_page_config(
 # Título de la aplicación
 st.title("🏨 Sistema de Análisis de Precios de Hoteles")
 
-# IDs de las hojas de cálculo
+# IDs de las hojas de cálculo - VERIFICAR ESTOS IDs
 SHEET_IDS = {
-    "Mérida": "13tPaaJCX4o4HkxrRdPiuc5dq83Eh7-KU",
+    "Mérida": "13tPaaJCX4o4HkxrRdPiuc5NDP3XhrJuvKdq83Eh7-KU",
     "Tuxtla": "1Stux8hR4IlZ879gL7TRbz3uKzputDVwR362VINUr5Ho"
 }
 
@@ -27,42 +27,75 @@ SHEET_IDS = {
 def setup_gspread():
     try:
         if 'gcp_service_account' not in st.secrets:
+            st.error("❌ No se encontraron credenciales en st.secrets")
+            st.info("""
+            **Para configurar las credenciales:**
+            1. Ve a la configuración de tu app en Streamlit Cloud
+            2. Agrega las credenciales de servicio en 'Secrets'
+            3. Asegúrate de que el service account tenga acceso a las hojas
+            """)
             return None
             
-        creds_info = {
-            "type": st.secrets["gcp_service_account"]["type"],
-            "project_id": st.secrets["gcp_service_account"]["project_id"],
-            "private_key_id": st.secrets["gcp_service_account"]["private_key_id"],
-            "private_key": st.secrets["gcp_service_account"]["private_key"].replace('\\n', '\n'),
-            "client_email": st.secrets["gcp_service_account"]["client_email"],
-            "client_id": st.secrets["gcp_service_account"]["client_id"],
-            "auth_uri": st.secrets["gcp_service_account"]["auth_uri"],
-            "token_uri": st.secrets["gcp_service_account"]["token_uri"],
-            "auth_provider_x509_cert_url": st.secrets["gcp_service_account"]["auth_provider_x509_cert_url"],
-            "client_x509_cert_url": st.secrets["gcp_service_account"]["client_x509_cert_url"],
-            "universe_domain": st.secrets["gcp_service_account"]["universe_domain"]
-        }
-        
-        creds = service_account.Credentials.from_service_account_info(
-            creds_info,
+        # Método más simple y robusto
+        credentials = service_account.Credentials.from_service_account_info(
+            st.secrets["gcp_service_account"],
             scopes=[
                 "https://www.googleapis.com/auth/spreadsheets",
                 "https://www.googleapis.com/auth/drive"
             ]
         )
-        return gspread.authorize(creds)
-    except Exception as e:
-        st.error(f"Error de autenticación: {e}")
-        return None
+        client = gspread.authorize(credentials)
         
+        # Verificar que la autenticación funciona
+        try:
+            client.list_spreadsheet_files()
+            st.sidebar.success("✅ Autenticación exitosa")
+            return client
+        except Exception as auth_error:
+            st.error(f"❌ Error de autenticación: {auth_error}")
+            return None
+            
+    except Exception as e:
+        st.error(f"❌ Error configurando Google Sheets: {e}")
+        return None
+
+# Función para verificar acceso al spreadsheet
+def verify_spreadsheet_access(client, spreadsheet_id):
+    try:
+        spreadsheet = client.open_by_key(spreadsheet_id)
+        # Intentar acceder a la información básica
+        spreadsheet.title
+        return True, f"✅ Acceso confirmado a: {spreadsheet.title}"
+    except gspread.SpreadsheetNotFound:
+        return False, "❌ Spreadsheet no encontrado. Verifica el ID."
+    except gspread.exceptions.APIError as api_error:
+        return False, f"❌ Error de API: {api_error}"
+    except Exception as e:
+        return False, f"❌ Error de acceso: {e}"
+
 # Función para obtener todas las hojas de un spreadsheet
 def get_all_sheets(spreadsheet_id, client):
     try:
         spreadsheet = client.open_by_key(spreadsheet_id)
         worksheets = spreadsheet.worksheets()
+        
+        if not worksheets:
+            st.warning("⚠️ El spreadsheet no contiene hojas")
+            return None
+            
         return {f"{ws.title}": ws for ws in worksheets}
+        
+    except gspread.SpreadsheetNotFound:
+        st.error("❌ Spreadsheet no encontrado. Verifica:")
+        st.error("1. El ID del spreadsheet")
+        st.error("2. Que el service account tenga acceso")
+        st.error("3. Que el spreadsheet exista")
+        return None
+    except gspread.exceptions.APIError as api_error:
+        st.error(f"❌ Error de API de Google: {api_error}")
+        return None
     except Exception as e:
-        st.error(f"Error al acceder al spreadsheet: {e}")
+        st.error(f"❌ Error al acceder al spreadsheet: {e}")
         return None
 
 # Función para obtener datos de una hoja específica
@@ -79,7 +112,6 @@ def get_sheet_data(worksheet):
 
 # Función para detectar automáticamente columnas relevantes
 def detect_columns(df):
-    # Buscar columna de hotel
     hotel_keywords = ['hotel', 'nombre', 'name', 'establecimiento', 'property']
     price_keywords = ['precio', 'price', 'costo', 'cost', 'valor', 'value', 'monto', 'amount', 'importe']
     
@@ -89,13 +121,10 @@ def detect_columns(df):
     for col in df.columns:
         col_lower = str(col).lower()
         
-        # Detectar columna de hotel
         if not hotel_col and any(keyword in col_lower for keyword in hotel_keywords):
             hotel_col = col
         
-        # Detectar columna de precio
         if not price_col and any(keyword in col_lower for keyword in price_keywords):
-            # Verificar si contiene valores numéricos
             try:
                 numeric_test = pd.to_numeric(df[col].astype(str).str.replace(',', '.').str.replace('$', '').str.replace(' ', ''), errors='coerce')
                 if numeric_test.notna().sum() > 0:
@@ -103,14 +132,13 @@ def detect_columns(df):
             except:
                 continue
     
-    # Si no se detecta por nombre, buscar la primera columna de texto para hotel
+    # Fallbacks
     if not hotel_col:
         for col in df.columns:
             if df[col].dtype == 'object' and len(df[col].astype(str).str.strip().unique()) > 1:
                 hotel_col = col
                 break
     
-    # Si no se detecta por nombre, buscar la primera columna numérica para precio
     if not price_col:
         numeric_cols = df.select_dtypes(include=[np.number]).columns
         if len(numeric_cols) > 0:
@@ -124,15 +152,13 @@ def search_hotel_until_30_prices(client, spreadsheet_id, hotel_name, max_sheets_
         spreadsheet = client.open_by_key(spreadsheet_id)
         worksheets = spreadsheet.worksheets()
         
-        # Ordenar hojas por fecha (las más recientes primero)
         dated_sheets = []
         for ws in worksheets:
             sheet_name = ws.title.lower()
-            # Buscar patrones de fecha en el nombre de la hoja
             date_patterns = [
-                r'\d{2}[-/]\d{2}[-/]\d{4}',  # DD-MM-YYYY
-                r'\d{4}[-/]\d{2}[-/]\d{2}',  # YYYY-MM-DD
-                r'\d{2}[-/]\d{2}[-/]\d{2}',  # DD-MM-YY
+                r'\d{2}[-/]\d{2}[-/]\d{4}',
+                r'\d{4}[-/]\d{2}[-/]\d{2}',
+                r'\d{2}[-/]\d{2}[-/]\d{2}',
             ]
             
             date_found = None
@@ -144,14 +170,12 @@ def search_hotel_until_30_prices(client, spreadsheet_id, hotel_name, max_sheets_
             
             dated_sheets.append((ws, date_found or sheet_name))
         
-        # Ordenar por fecha (las más recientes primero)
         dated_sheets.sort(key=lambda x: x[1], reverse=True)
         
         resultados = []
         precios_encontrados = 0
         hojas_revisadas = 0
         
-        # Recorrer hojas hasta encontrar 30 precios o revisar todas
         for ws, date_str in dated_sheets:
             if precios_encontrados >= 30:
                 break
@@ -165,7 +189,6 @@ def search_hotel_until_30_prices(client, spreadsheet_id, hotel_name, max_sheets_
                     hotel_col, price_col = detect_columns(df)
                     
                     if hotel_col and price_col:
-                        # Buscar el hotel (búsqueda insensible a mayúsculas)
                         mask = df[hotel_col].astype(str).str.lower().str.contains(hotel_name.lower(), na=False)
                         hotel_data = df[mask]
                         
@@ -206,11 +229,9 @@ def calculate_hotel_metrics_30(resultados):
     if not resultados or len(resultados) < 30:
         return None
     
-    # Tomar exactamente los últimos 30 precios encontrados
-    ultimos_30 = resultados[:30]  # Ya están ordenados de más reciente a más antiguo
+    ultimos_30 = resultados[:30]
     precios = [r['precio'] for r in ultimos_30]
     
-    # Contar precios por hoja
     precios_por_hoja = {}
     for r in ultimos_30:
         if r['hoja'] in precios_por_hoja:
@@ -229,7 +250,7 @@ def calculate_hotel_metrics_30(resultados):
         'precios_por_hoja': precios_por_hoja
     }
 
-# Función original para calcular métricas (para cuando no hay 30 precios)
+# Función original para calcular métricas
 def calculate_hotel_metrics(resultados):
     if not resultados:
         return None
@@ -259,87 +280,110 @@ spreadsheet_id = SHEET_IDS[ubicacion]
 # Obtener cliente de Google Sheets
 client = setup_gspread()
 
+# Verificar acceso si el cliente está disponible
+if client:
+    st.sidebar.header("🔍 Verificación de Acceso")
+    access_status, message = verify_spreadsheet_access(client, spreadsheet_id)
+    st.sidebar.info(message)
+    
+    if "no encontrado" in message.lower() or "error" in message.lower():
+        st.sidebar.error("""
+        **Solución:**
+        1. Verifica el ID del spreadsheet
+        2. Comparte el spreadsheet con el service account
+        3. Email del service account: revisa en st.secrets
+        """)
+
 # Barra de búsqueda de hoteles
 st.header("🔍 Búsqueda de Hotel")
-hotel_busqueda = st.text_input(
-    "Ingresa el nombre del hotel a buscar:",
-    placeholder="Ej: Hilton, Marriott, Holiday Inn...",
-    help="Buscará el hotel hasta encontrar 30 precios válidos"
-)
 
-if hotel_busqueda and client:
-    with st.spinner(f"Buscando '{hotel_busqueda}' hasta encontrar 30 precios..."):
-        resultados, precios_encontrados, hojas_revisadas = search_hotel_until_30_prices(client, spreadsheet_id, hotel_busqueda, 100)
+if not client:
+    st.warning("""
+    ⚠️ **Configuración requerida:**
     
-    if resultados:
-        if precios_encontrados >= 30:
-            st.success(f"✅ Encontrados 30 precios en {hojas_revisadas} hojas revisadas")
-            metrics = calculate_hotel_metrics_30(resultados)
-        else:
-            st.warning(f"⚠️ Solo se encontraron {precios_encontrados} precios (se necesitan 30)")
-            metrics = calculate_hotel_metrics(resultados)
+    1. **Agrega credenciales** en Streamlit Secrets
+    2. **Comparte los spreadsheets** con el service account
+    3. **Verifica los IDs** de los spreadsheets
+    
+    **Email del service account:** Revisa en tus credenciales de Google Cloud
+    """)
+else:
+    hotel_busqueda = st.text_input(
+        "Ingresa el nombre del hotel a buscar:",
+        placeholder="Ej: Hilton, Marriott, Holiday Inn...",
+        help="Buscará el hotel hasta encontrar 30 precios válidos"
+    )
+
+    if hotel_busqueda:
+        with st.spinner(f"Buscando '{hotel_busqueda}' hasta encontrar 30 precios..."):
+            resultados, precios_encontrados, hojas_revisadas = search_hotel_until_30_prices(client, spreadsheet_id, hotel_busqueda, 100)
         
-        if metrics:
-            col1, col2, col3, col4 = st.columns(4)
+        if resultados:
+            if precios_encontrados >= 30:
+                st.success(f"✅ Encontrados 30 precios en {hojas_revisadas} hojas revisadas")
+                metrics = calculate_hotel_metrics_30(resultados)
+            else:
+                st.warning(f"⚠️ Solo se encontraron {precios_encontrados} precios (se necesitan 30)")
+                metrics = calculate_hotel_metrics(resultados)
             
-            with col1:
-                st.metric("Precio Mínimo", f"${metrics['precio_minimo']:,.2f}")
-            
-            with col2:
-                st.metric("Precio Máximo", f"${metrics['precio_maximo']:,.2f}")
-            
-            with col3:
-                st.metric("Suma Total", f"${metrics['suma_total']:,.2f}")
-            
-            with col4:
-                if precios_encontrados >= 30:
-                    st.metric("Promedio (30)", f"${metrics['promedio']:,.2f}")
-                else:
-                    st.metric("Promedio", f"${metrics['promedio']:,.2f}")
-            
-            # Detalles del cálculo
-            with st.expander("📊 Detalles del análisis"):
-                st.write(f"**Hotel buscado:** {hotel_busqueda}")
-                st.write(f"**Total de hojas revisadas:** {hojas_revisadas}")
-                st.write(f"**Total de precios encontrados:** {precios_encontrados}")
+            if metrics:
+                col1, col2, col3, col4 = st.columns(4)
                 
-                if precios_encontrados >= 30:
-                    st.write(f"**Precios usados para el promedio:** 30")
-                    st.write(f"**Rango de fechas:** {metrics['rango_fechas']}")
-                    st.write(f"**Fórmula del promedio:** Suma total / 30")
-                    st.write(f"**Cálculo:** ${metrics['suma_total']:,.2f} / 30 = ${metrics['promedio']:,.2f}")
+                with col1:
+                    st.metric("Precio Mínimo", f"${metrics['precio_minimo']:,.2f}")
+                
+                with col2:
+                    st.metric("Precio Máximo", f"${metrics['precio_maximo']:,.2f}")
+                
+                with col3:
+                    st.metric("Suma Total", f"${metrics['suma_total']:,.2f}")
+                
+                with col4:
+                    if precios_encontrados >= 30:
+                        st.metric("Promedio (30)", f"${metrics['promedio']:,.2f}")
+                    else:
+                        st.metric("Promedio", f"${metrics['promedio']:,.2f}")
+                
+                with st.expander("📊 Detalles del análisis"):
+                    st.write(f"**Hotel buscado:** {hotel_busqueda}")
+                    st.write(f"**Total de hojas revisadas:** {hojas_revisadas}")
+                    st.write(f"**Total de precios encontrados:** {precios_encontrados}")
                     
-                    st.write("**Distribución de precios por hoja:**")
-                    for hoja, cantidad in metrics['precios_por_hoja'].items():
-                        st.write(f"  - {hoja}: {cantidad} precios")
-                else:
-                    st.write(f"**Precios usados para el promedio:** {precios_encontrados}")
-                    st.write(f"**Rango de fechas:** {metrics['primer_hoja']} - {metrics['ultima_hoja']}")
-                    st.write(f"**Fórmula del promedio:** Suma total / {precios_encontrados}")
-                    st.write(f"**Cálculo:** ${metrics['suma_total']:,.2f} / {precios_encontrados} = ${metrics['promedio']:,.2f}")
+                    if precios_encontrados >= 30:
+                        st.write(f"**Precios usados para el promedio:** 30")
+                        st.write(f"**Rango de fechas:** {metrics['rango_fechas']}")
+                        st.write(f"**Fórmula del promedio:** Suma total / 30")
+                        st.write(f"**Cálculo:** ${metrics['suma_total']:,.2f} / 30 = ${metrics['promedio']:,.2f}")
+                        
+                        st.write("**Distribución de precios por hoja:**")
+                        for hoja, cantidad in metrics['precios_por_hoja'].items():
+                            st.write(f"  - {hoja}: {cantidad} precios")
+                    else:
+                        st.write(f"**Precios usados para el promedio:** {precios_encontrados}")
+                        st.write(f"**Rango de fechas:** {metrics.get('primer_hoja', '')} - {metrics.get('ultima_hoja', '')}")
+                        st.write(f"**Fórmula del promedio:** Suma total / {precios_encontrados}")
+                        st.write(f"**Cálculo:** ${metrics['suma_total']:,.2f} / {precios_encontrados} = ${metrics['promedio']:,.2f}")
+                
+                st.subheader("📋 Precios Encontrados")
+                resultados_df = pd.DataFrame(resultados)
+                st.dataframe(
+                    resultados_df[['hoja', 'hotel', 'precio', 'fecha_hoja']],
+                    use_container_width=True,
+                    height=400
+                )
+                
+                st.subheader("📈 Evolución de Precios")
+                try:
+                    chart_data = resultados_df[['hoja', 'precio']].copy()
+                    chart_data['hoja'] = chart_data['hoja'].astype(str)
+                    st.line_chart(chart_data.set_index('hoja')['precio'])
+                except:
+                    st.info("No se pudo generar el gráfico de evolución")
             
-            # Mostrar resultados detallados
-            st.subheader("📋 Precios Encontrados")
-            resultados_df = pd.DataFrame(resultados)
-            st.dataframe(
-                resultados_df[['hoja', 'hotel', 'precio', 'fecha_hoja']],
-                use_container_width=True,
-                height=400
-            )
-            
-            # Gráfico de precios por hoja
-            st.subheader("📈 Evolución de Precios")
-            try:
-                chart_data = resultados_df[['hoja', 'precio']].copy()
-                chart_data['hoja'] = chart_data['hoja'].astype(str)
-                st.line_chart(chart_data.set_index('hoja')['precio'])
-            except:
-                st.info("No se pudo generar el gráfico de evolución")
-        
+            else:
+                st.warning("Se encontraron resultados pero no precios válidos.")
         else:
-            st.warning("Se encontraron resultados pero no precios válidos.")
-    else:
-        st.warning(f"No se encontró el hotel '{hotel_busqueda}' en las hojas revisadas.")
+            st.warning(f"No se encontró el hotel '{hotel_busqueda}' en las hojas revisadas.")
 
 # Sección de análisis de hojas individuales
 st.header("📊 Análisis de Hoja Individual")
@@ -370,7 +414,6 @@ if client:
             if hotel_col and price_col:
                 st.success(f"✅ Columnas detectadas: Hotel → {hotel_col}, Precio → {price_col}")
                 
-                # Análisis de precios de la hoja actual
                 try:
                     df['precio_limpio'] = pd.to_numeric(
                         df[price_col].astype(str).str.replace(',', '.').str.replace('$', '').str.replace(' ', ''),
@@ -397,7 +440,6 @@ if client:
                 except Exception as e:
                     st.error(f"Error en análisis de precios: {e}")
             
-            # Mostrar datos
             st.dataframe(df, use_container_width=True, height=300)
             
         else:
@@ -406,13 +448,14 @@ if client:
         st.error("No se pudieron cargar las hojas.")
 
 # Información adicional
-st.sidebar.header("ℹ️ Información")
+st.sidebar.header("ℹ️ Configuración Requerida")
 st.sidebar.info("""
-**Búsqueda de Hoteles:**
-- Busca hasta encontrar 30 precios válidos
-- Calcula promedio de los últimos 30 precios
-- Muestra distribución por hojas
-- Ordena por fecha (más reciente primero)
+**Para que funcione correctamente:**
+
+1. **Credenciales** en Streamlit Secrets
+2. **Compartir spreadsheets** con el service account
+3. **IDs correctos** de los spreadsheets
+4. **Permisos** de lectura en Google Sheets
 """)
 
 # Pie de página
@@ -422,5 +465,3 @@ st.markdown(
     f"{datetime.now().strftime('%Y-%m-%d %H:%M')}</div>",
     unsafe_allow_html=True
 )
-
-
