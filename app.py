@@ -213,6 +213,236 @@ def calculate_hotel_metrics(resultados):
         'ultima_hoja': resultados[-1]['hoja'] if resultados else ''
     }
 
+# =============================================================================
+# === AGREGAR AQUÍ LAS NUEVAS FUNCIONES TOP 10 (DESPUÉS DE LÍNEA 202) ===
+# =============================================================================
+
+# Función para obtener el top 10 de hoteles por precio
+def get_top_hotels(client, spreadsheet_id, num_sheets=10, top_type="min"):
+    """
+    Obtiene el top 10 de hoteles con menor o mayor precio
+    top_type: "min" para menor precio, "max" para mayor precio
+    """
+    try:
+        spreadsheet = client.open_by_key(spreadsheet_id)
+        worksheets = spreadsheet.worksheets()
+        
+        # Ordenar hojas por fecha (más recientes primero)
+        dated_sheets = []
+        for ws in worksheets:
+            sheet_name = ws.title.lower()
+            date_patterns = [
+                r'\d{2}[-/]\d{2}[-/]\d{4}', r'\d{4}[-/]\d{2}[-/]\d{2}', r'\d{2}[-/]\d{2}[-/]\d{2}'
+            ]
+            
+            date_found = None
+            for pattern in date_patterns:
+                match = re.search(pattern, sheet_name)
+                if match:
+                    date_found = match.group()
+                    break
+            
+            dated_sheets.append((ws, date_found or sheet_name))
+        
+        dated_sheets.sort(key=lambda x: x[1], reverse=True)
+        recent_sheets = dated_sheets[:num_sheets]
+        
+        all_hotels = []
+        
+        for ws, date_str in recent_sheets:
+            try:
+                df = get_sheet_data(ws)
+                if df is not None and not df.empty:
+                    hotel_col, price_col = detect_columns(df)
+                    
+                    if hotel_col and price_col:
+                        # Procesar cada fila
+                        for _, row in df.iterrows():
+                            try:
+                                hotel_name = str(row[hotel_col]).strip()
+                                if not hotel_name or hotel_name.lower() in ['nan', 'none', '']:
+                                    continue
+                                
+                                # Limpiar y convertir precio
+                                price_str = str(row[price_col])
+                                price_clean = re.sub(r'[^\d.]', '', price_str)
+                                precio = float(price_clean) if price_clean else None
+                                
+                                if precio and precio > 0 and hotel_name:
+                                    all_hotels.append({
+                                        'hotel': hotel_name,
+                                        'precio': precio,
+                                        'hoja': ws.title,
+                                        'fecha': date_str
+                                    })
+                            except:
+                                continue
+            except:
+                continue
+        
+        # Agrupar por hotel y calcular precio promedio
+        hotel_stats = {}
+        for hotel_data in all_hotels:
+            hotel_name = hotel_data['hotel']
+            if hotel_name not in hotel_stats:
+                hotel_stats[hotel_name] = {
+                    'precios': [],
+                    'hojas': set(),
+                    'ultima_hoja': hotel_data['hoja']
+                }
+            hotel_stats[hotel_name]['precios'].append(hotel_data['precio'])
+            hotel_stats[hotel_name]['hojas'].add(hotel_data['hoja'])
+        
+        # Calcular promedio por hotel
+        hotel_ranking = []
+        for hotel_name, stats in hotel_stats.items():
+            if stats['precios']:
+                avg_price = sum(stats['precios']) / len(stats['precios'])
+                hotel_ranking.append({
+                    'hotel': hotel_name,
+                    'precio_promedio': avg_price,
+                    'precio_min': min(stats['precios']),
+                    'precio_max': max(stats['precios']),
+                    'muestras': len(stats['precios']),
+                    'hojas': len(stats['hojas']),
+                    'ultima_hoja': stats['ultima_hoja']
+                })
+        
+        # Ordenar según el tipo de top
+        if top_type == "min":
+            hotel_ranking.sort(key=lambda x: x['precio_promedio'])
+        else:  # max
+            hotel_ranking.sort(key=lambda x: x['precio_promedio'], reverse=True)
+        
+        return hotel_ranking[:10]  # Top 10
+        
+    except Exception as e:
+        st.error(f"Error obteniendo top hoteles: {e}")
+        return []
+
+# Función para mostrar los tops en la interfaz
+def display_top_hotels(client, spreadsheet_id, ubicacion):
+    st.header("🏆 Top 10 Hoteles")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("💰 Top 10 Menor Precio")
+        with st.spinner("Buscando hoteles más económicos..."):
+            top_min = get_top_hotels(client, spreadsheet_id, 10, "min")
+        
+        if top_min:
+            min_df = pd.DataFrame(top_min)
+            min_df['ranking'] = range(1, len(min_df) + 1)
+            min_df = min_df[['ranking', 'hotel', 'precio_promedio', 'muestras', 'hojas', 'ultima_hoja']]
+            min_df.columns = ['#', 'Hotel', 'Precio Promedio', 'Muestras', 'Hojas', 'Última Hoja']
+            
+            # Formatear precios
+            min_df['Precio Promedio'] = min_df['Precio Promedio'].apply(lambda x: f"${x:,.2f}")
+            
+            st.dataframe(
+                min_df,
+                use_container_width=True,
+                height=400,
+                hide_index=True
+            )
+            
+            # Gráfico de barras
+            try:
+                chart_data = min_df.copy()
+                chart_data['Precio Numérico'] = [x['precio_promedio'] for x in top_min]
+                st.bar_chart(chart_data.set_index('Hotel')['Precio Numérico'])
+            except:
+                pass
+        else:
+            st.info("No se encontraron datos para el top de menores precios")
+    
+    with col2:
+        st.subheader("💎 Top 10 Mayor Precio")
+        with st.spinner("Buscando hoteles más caros..."):
+            top_max = get_top_hotels(client, spreadsheet_id, 10, "max")
+        
+        if top_max:
+            max_df = pd.DataFrame(top_max)
+            max_df['ranking'] = range(1, len(max_df) + 1)
+            max_df = max_df[['ranking', 'hotel', 'precio_promedio', 'muestras', 'hojas', 'ultima_hoja']]
+            max_df.columns = ['#', 'Hotel', 'Precio Promedio', 'Muestras', 'Hojas', 'Última Hoja']
+            
+            # Formatear precios
+            max_df['Precio Promedio'] = max_df['Precio Promedio'].apply(lambda x: f"${x:,.2f}")
+            
+            st.dataframe(
+                max_df,
+                use_container_width=True,
+                height=400,
+                hide_index=True
+            )
+            
+            # Gráfico de barras
+            try:
+                chart_data = max_df.copy()
+                chart_data['Precio Numérico'] = [x['precio_promedio'] for x in top_max]
+                st.bar_chart(chart_data.set_index('Hotel')['Precio Numérico'])
+            except:
+                pass
+        else:
+            st.info("No se encontraron datos para el top de mayores precios")
+
+# Función para mostrar estadísticas generales
+def display_hotel_statistics(client, spreadsheet_id):
+    st.header("📈 Estadísticas Generales de Hoteles")
+    
+    with st.spinner("Calculando estadísticas..."):
+        top_min = get_top_hotels(client, spreadsheet_id, 20, "min")
+        top_max = get_top_hotels(client, spreadsheet_id, 20, "max")
+    
+    if top_min and top_max:
+        # Calcular estadísticas generales
+        all_prices = []
+        for hotel in top_min + top_max:
+            all_prices.append(hotel['precio_promedio'])
+        
+        if all_prices:
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                st.metric("Precio Promedio General", f"${sum(all_prices)/len(all_prices):,.2f}")
+            
+            with col2:
+                st.metric("Precio Más Bajo", f"${min(all_prices):,.2f}")
+            
+            with col3:
+                st.metric("Precio Más Alto", f"${max(all_prices):,.2f}")
+            
+            with col4:
+                st.metric("Rango de Precios", f"${max(all_prices)-min(all_prices):,.2f}")
+            
+            # Distribución de precios
+            st.subheader("📊 Distribución de Precios")
+            price_df = pd.DataFrame({'Precio': all_prices})
+            st.histogram(price_df, x='Precio', nbins=20)
+            
+# Función para calcular métricas de los resultados
+def calculate_hotel_metrics(resultados):
+    if not resultados:
+        return None
+    
+    precios = [r['precio'] for r in resultados if r['precio'] > 0]
+    
+    if not precios:
+        return None
+    
+    return {
+        'total_hojas_revisadas': len(set(r['hoja'] for r in resultados)),
+        'total_precios_encontrados': len(precios),
+        'precio_minimo': min(precios),
+        'precio_maximo': max(precios),
+        'suma_total': sum(precios),
+        'promedio': sum(precios) / len(precios),
+        'primer_hoja': resultados[0]['hoja'] if resultados else '',
+        'ultima_hoja': resultados[-1]['hoja'] if resultados else ''
+    }
+
 # Selector de ubicación en el sidebar
 st.sidebar.header("📍 Selecciona Ubicación")
 ubicacion = st.sidebar.radio("Ubicación:", ["Mérida", "Madrid", "Tuxtla"], index=0)
@@ -367,6 +597,7 @@ st.markdown(
     f"{datetime.now().strftime('%Y-%m-%d %H:%M')}</div>",
     unsafe_allow_html=True
 )
+
 
 
 
