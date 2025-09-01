@@ -232,7 +232,7 @@ hotel_busqueda = st.text_input(
 
 if hotel_busqueda and client:
     with st.spinner(f"Buscando '{hotel_busqueda}' en los últimos 30 Dias..."):
-        resultados, precios_encontrados = search_hotel_in_sheets(client, spreadsheet_id, hotel_busqueda, 30)
+        resultados, precios_encontrados = search_hotel_in_sheets(client, spreadsheet_id, hotel_busqueda, 90)
     
     if resultados:
         metrics = calculate_hotel_metrics(resultados)
@@ -367,6 +367,7 @@ st.markdown(
     f"{datetime.now().strftime('%Y-%m-%d %H:%M')}</div>",
     unsafe_allow_html=True
 )
+
 
 
 
