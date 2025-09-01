@@ -503,7 +503,6 @@ if client:
     with st.expander("📈 Ver Estadísticas Generales"):
         display_hotel_statistics(client, spreadsheet_id)
         
-if client:
     with st.spinner("Cargando hojas disponibles..."):
         sheets_dict = get_all_sheets(spreadsheet_id, client)
     
@@ -580,6 +579,7 @@ st.markdown(
     f"{datetime.now().strftime('%Y-%m-%d %H:%M')}</div>",
     unsafe_allow_html=True
 )
+
 
 
 
