@@ -43,7 +43,7 @@ def setup_gspread():
             "universe_domain": st.secrets["gcp_service_account"]["universe_domain"]
         }
         
-        creds = service_account.Credentials.from_service_account_info(
+         creds = service_account.Credentials.from_service_account_info(
             creds_info,
             scopes=[
                 "https://www.googleapis.com/auth/spreadsheets",
@@ -54,7 +54,7 @@ def setup_gspread():
     except Exception as e:
         st.error(f"Error de autenticación: {e}")
         return None
-
+        
 # Función para obtener todas las hojas de un spreadsheet
 def get_all_sheets(spreadsheet_id, client):
     try:
@@ -422,3 +422,4 @@ st.markdown(
     f"{datetime.now().strftime('%Y-%m-%d %H:%M')}</div>",
     unsafe_allow_html=True
 )
+
