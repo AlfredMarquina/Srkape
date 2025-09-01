@@ -396,8 +396,7 @@ def display_hotel_statistics(client, spreadsheet_id):
             st.subheader("📊 Distribución de Precios")
             price_df = pd.DataFrame({'Precio': all_prices})
             st.histogram(price_df, x='Precio', nbins=20)
-
-# Función para calcular métricas de los resultados
+            
 def calculate_hotel_metrics(resultados):
     if not resultados:
         return None
@@ -579,6 +578,7 @@ st.markdown(
     f"{datetime.now().strftime('%Y-%m-%d %H:%M')}</div>",
     unsafe_allow_html=True
 )
+
 
 
 
