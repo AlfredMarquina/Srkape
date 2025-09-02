@@ -5,8 +5,6 @@ from google.oauth2 import service_account
 from datetime import datetime, timedelta
 import numpy as np
 import re
-import time
-from functools import lru_cache
 
 # Configuración de la página
 st.set_page_config(
@@ -58,54 +56,20 @@ def setup_gspread():
         st.error(f"Error de autenticación: {e}")
         return None
 
-# Función con manejo de rate limiting
-def safe_google_sheets_call(func, *args, **kwargs):
-    """Maneja intentos con retry para rate limiting"""
-    max_retries = 3
-    retry_delay = 2  # segundos
-    
-    for attempt in range(max_retries):
-        try:
-            return func(*args, **kwargs)
-        except Exception as e:
-            if '429' in str(e) or 'RESOURCE_EXHAUSTED' in str(e) or 'Quota exceeded' in str(e):
-                if attempt < max_retries - 1:
-                    st.warning(f"⚠️ Límite de cuota alcanzado. Reintentando en {retry_delay} segundos... (Intento {attempt + 1}/{max_retries})")
-                    time.sleep(retry_delay * (attempt + 1))  # Backoff exponencial
-                    continue
-                else:
-                    st.error("🚫 Límite de cuota de Google Sheets excedido. Por favor espera 1 minuto antes de continuar.")
-                    return None
-            else:
-                st.error(f"Error al acceder a Google Sheets: {e}")
-                return None
-    return None
-
-# Función para obtener todas las hojas de un spreadsheet con cache
-@st.cache_data(ttl=300)  # Cache por 5 minutos
+# Función para obtener todas las hojas de un spreadsheet
 def get_all_sheets(spreadsheet_id, client):
     try:
-        result = safe_google_sheets_call(client.open_by_key, spreadsheet_id)
-        if result is None:
-            return None
-            
-        worksheets = safe_google_sheets_call(lambda: result.worksheets())
-        if worksheets is None:
-            return None
-            
+        spreadsheet = client.open_by_key(spreadsheet_id)
+        worksheets = spreadsheet.worksheets()
         return {f"{ws.title}": ws for ws in worksheets}
     except Exception as e:
         st.error(f"Error al acceder al spreadsheet: {e}")
         return None
 
-# Función para obtener datos de una hoja específica con cache
-@st.cache_data(ttl=300)
+# Función para obtener datos de una hoja específica
 def get_sheet_data(worksheet):
     try:
-        data = safe_google_sheets_call(worksheet.get_all_records)
-        if data is None:
-            return pd.DataFrame()
-            
+        data = worksheet.get_all_records()
         if not data:
             return pd.DataFrame()
         df = pd.DataFrame(data)
@@ -155,21 +119,17 @@ def detect_columns(df):
     
     return hotel_col, price_col
 
-# Función para buscar hotel en múltiples hojas (optimizada)
-def search_hotel_in_sheets(client, spreadsheet_id, hotel_name, max_sheets=30):  # Reducido a 30 hojas
+# Función para buscar hotel en múltiples hojas
+def search_hotel_in_sheets(client, spreadsheet_id, hotel_name, max_sheets=30):
     try:
-        spreadsheet = safe_google_sheets_call(client.open_by_key, spreadsheet_id)
-        if spreadsheet is None:
-            return [], 0
-            
-        worksheets = safe_google_sheets_call(spreadsheet.worksheets)
-        if worksheets is None:
-            return [], 0
+        spreadsheet = client.open_by_key(spreadsheet_id)
+        worksheets = spreadsheet.worksheets()
         
-        # Ordenar hojas por fecha y tomar solo las necesarias
+        # Ordenar hojas por fecha (asumiendo que los nombres contienen fechas)
         dated_sheets = []
-        for ws in worksheets[:max_sheets]:  # Limitar desde el inicio
+        for ws in worksheets:
             sheet_name = ws.title.lower()
+            # Buscar patrones de fecha en el nombre de la hoja
             date_patterns = [
                 r'\d{2}[-/]\d{2}[-/]\d{4}',  # DD-MM-YYYY
                 r'\d{4}[-/]\d{2}[-/]\d{2}',  # YYYY-MM-DD
@@ -182,11 +142,14 @@ def search_hotel_in_sheets(client, spreadsheet_id, hotel_name, max_sheets=30):  
                     dated_sheets.append((ws, match.group()))
                     break
             else:
+                # Si no encuentra fecha, usar el nombre como está
                 dated_sheets.append((ws, sheet_name))
         
         # Ordenar por fecha (las más recientes primero)
         dated_sheets.sort(key=lambda x: x[1], reverse=True)
-        recent_sheets = dated_sheets[:min(20, len(dated_sheets))]  # Máximo 20 hojas
+        
+        # Tomar las últimas max_sheets hojas
+        recent_sheets = dated_sheets[:max_sheets]
         
         resultados = []
         precios_encontrados = 0
@@ -250,24 +213,15 @@ def calculate_hotel_metrics(resultados):
         'ultima_hoja': resultados[-1]['hoja'] if resultados else ''
     }
 
-# Función para obtener el top 10 de hoteles por precio (optimizada)
-@st.cache_data(ttl=600)  # Cache por 10 minutos
-def get_top_hotels(client, spreadsheet_id, num_sheets=5, top_type="min"):  # Reducido a 5 hojas
+# Función para obtener el top 10 de hoteles por precio
+def get_top_hotels(client, spreadsheet_id, num_sheets=10, top_type="min"):
     """
     Obtiene el top 10 de hoteles con menor o mayor precio
     top_type: "min" para menor precio, "max" para mayor precio
     """
     try:
-        spreadsheet = safe_google_sheets_call(client.open_by_key, spreadsheet_id)
-        if spreadsheet is None:
-            return []
-            
-        worksheets = safe_google_sheets_call(spreadsheet.worksheets)
-        if worksheets is None:
-            return []
-        
-        # Limitar el número de hojas desde el inicio
-        worksheets = worksheets[:num_sheets]
+        spreadsheet = client.open_by_key(spreadsheet_id)
+        worksheets = spreadsheet.worksheets()
         
         # Ordenar hojas por fecha (más recientes primero)
         dated_sheets = []
@@ -308,7 +262,7 @@ def get_top_hotels(client, spreadsheet_id, num_sheets=5, top_type="min"):  # Red
                                 # Limpiar y convertir precio
                                 price_str = str(row[price_col])
                                 price_clean = re.sub(r'[^\d.]', '', price_str)
-                                precio = float(price_clean) if price_clean and price_clean != '.' else None
+                                precio = float(price_clean) if price_clean else None
                                 
                                 if precio and precio > 0 and hotel_name:
                                     all_hotels.append({
@@ -371,7 +325,7 @@ def display_top_hotels(client, spreadsheet_id, ubicacion):
     with col1:
         st.subheader("💰 Top 10 Menor Precio")
         with st.spinner("Buscando hoteles más económicos..."):
-            top_min = get_top_hotels(client, spreadsheet_id, 5, "min")  # Solo 5 hojas
+            top_min = get_top_hotels(client, spreadsheet_id, 10, "min")
         
         if top_min:
             min_df = pd.DataFrame(top_min)
@@ -388,13 +342,21 @@ def display_top_hotels(client, spreadsheet_id, ubicacion):
                 height=400,
                 hide_index=True
             )
+            
+            # Gráfico de barras
+            try:
+                chart_data = min_df.copy()
+                chart_data['Precio Numérico'] = [x['precio_promedio'] for x in top_min]
+                st.bar_chart(chart_data.set_index('Hotel')['Precio Numérico'])
+            except:
+                pass
         else:
             st.info("No se encontraron datos para el top de menores precios")
     
     with col2:
         st.subheader("💎 Top 10 Mayor Precio")
         with st.spinner("Buscando hoteles más caros..."):
-            top_max = get_top_hotels(client, spreadsheet_id, 5, "max")  # Solo 5 hojas
+            top_max = get_top_hotels(client, spreadsheet_id, 10, "max")
         
         if top_max:
             max_df = pd.DataFrame(top_max)
@@ -411,8 +373,50 @@ def display_top_hotels(client, spreadsheet_id, ubicacion):
                 height=400,
                 hide_index=True
             )
+            
+            # Gráfico de barras
+            try:
+                chart_data = max_df.copy()
+                chart_data['Precio Numérico'] = [x['precio_promedio'] for x in top_max]
+                st.bar_chart(chart_data.set_index('Hotel')['Precio Numérico'])
+            except:
+                pass
         else:
             st.info("No se encontraron datos para el top de mayores precios")
+
+# Función para mostrar estadísticas generales
+def display_hotel_statistics(client, spreadsheet_id):
+    st.header("📈 Estadísticas Generales de Hoteles")
+    
+    with st.spinner("Calculando estadísticas..."):
+        top_min = get_top_hotels(client, spreadsheet_id, 20, "min")
+        top_max = get_top_hotels(client, spreadsheet_id, 20, "max")
+    
+    if top_min and top_max:
+        # Calcular estadísticas generales
+        all_prices = []
+        for hotel in top_min + top_max:
+            all_prices.append(hotel['precio_promedio'])
+        
+        if all_prices:
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                st.metric("Precio Promedio General", f"${sum(all_prices)/len(all_prices):,.2f}")
+            
+            with col2:
+                st.metric("Precio Más Bajo", f"${min(all_prices):,.2f}")
+            
+            with col3:
+                st.metric("Precio Más Alto", f"${max(all_prices):,.2f}")
+            
+            with col4:
+                st.metric("Rango de Precios", f"${max(all_prices)-min(all_prices):,.2f}")
+            
+            # Distribución de precios
+            st.subheader("📊 Distribución de Precios")
+            price_df = pd.DataFrame({'Precio': all_prices})
+            st.bar_chart(price_df, x='Precio')
 
 # Selector de ubicación en el sidebar
 st.sidebar.header("📍 Selecciona Ubicación")
@@ -428,12 +432,12 @@ st.header("🔍 Búsqueda de Hotel")
 hotel_busqueda = st.text_input(
     "Ingresa el nombre del hotel a buscar:",
     placeholder="Ej: Hilton, Marriott, Holiday Inn...",
-    help="Buscará el hotel en las últimas 20 hojas disponibles (límite de cuota)"
+    help="Buscará el hotel en las últimas 30 Dias disponibles"
 )
 
 if hotel_busqueda and client:
-    with st.spinner(f"Buscando '{hotel_busqueda}' en las últimas 20 hojas..."):
-        resultados, precios_encontrados = search_hotel_in_sheets(client, spreadsheet_id, hotel_busqueda, 20)  # Reducido a 20 hojas
+    with st.spinner(f"Buscando '{hotel_busqueda}' en los últimos 30 Dias..."):
+        resultados, precios_encontrados = search_hotel_in_sheets(client, spreadsheet_id, hotel_busqueda, 30)
     
     if resultados:
         metrics = calculate_hotel_metrics(resultados)
@@ -473,13 +477,22 @@ if hotel_busqueda and client:
                 use_container_width=True,
                 height=300
             )
+            
+            # Gráfico de precios por hoja
+            st.subheader("📈 Evolución de Precios")
+            try:
+                chart_data = resultados_df[['hoja', 'precio']].copy()
+                chart_data['hoja'] = chart_data['hoja'].astype(str)
+                st.line_chart(chart_data.set_index('hoja')['precio'])
+            except:
+                st.info("No se pudo generar el gráfico de evolución")
         
         else:
             st.warning("Se encontraron resultados pero no precios válidos.")
     else:
-        st.warning(f"No se encontró el hotel '{hotel_busqueda}' en las últimas 20 hojas.")
+        st.warning(f"No se encontró el hotel '{hotel_busqueda}' en las últimas 30 hojas.")
 
-# Sección de análisis de hojas individuales
+# Sección de análisis de hojas individuales (código anterior)
 st.header("📊 Análisis de Hoja Individual")
 
 if client:
@@ -547,22 +560,23 @@ if client:
 st.markdown("---")
 if client:
     display_top_hotels(client, spreadsheet_id, ubicacion)
+    
+    # Opcional: Estadísticas generales
+    with st.expander("📈 Ver Estadísticas Generales Detalladas"):
+        display_hotel_statistics(client, spreadsheet_id)
 
 # Información adicional
 st.sidebar.header("ℹ️ Información")
 st.sidebar.info("""
-**Límites de Google Sheets:**
-- Máximo 60 solicitudes por minuto
-- Se han implementado cachés y límites
-- Si ves errores 429, espera 1 minuto
-
 **Búsqueda de Hoteles:**
-- Busca en las últimas 20 hojas
+- Busca en las últimas 30 hojas
 - Calcula precios mínimo, máximo y promedio
+- Muestra la evolución temporal
 
 **Top 10 Hoteles:**
-- Basado en las últimas 5 hojas
-- Usa caché para reducir solicitudes
+- Muestra los 10 hoteles más económicos
+- Muestra los 10 hoteles más caros
+- Basado en las últimas 10 hojas
 """)
 
 # Pie de página
