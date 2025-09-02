@@ -120,7 +120,7 @@ def detect_columns(df):
     return hotel_col, price_col
 
 # Función para buscar hotel en múltiples hojas
-def search_hotel_in_sheets(client, spreadsheet_id, hotel_name, max_sheets=30):
+def search_hotel_in_sheets(client, spreadsheet_id, hotel_name, max_sheets=60):
     try:
         spreadsheet = client.open_by_key(spreadsheet_id)
         worksheets = spreadsheet.worksheets()
@@ -191,6 +191,27 @@ def search_hotel_in_sheets(client, spreadsheet_id, hotel_name, max_sheets=30):
     except Exception as e:
         st.error(f"Error en la búsqueda: {e}")
         return [], 0
+
+# Función para calcular métricas de los resultados
+def calculate_hotel_metrics(resultados):
+    if not resultados:
+        return None
+    
+    precios = [r['precio'] for r in resultados if r['precio'] > 0]
+    
+    if not precios:
+        return None
+    
+    return {
+        'total_hojas_revisadas': len(set(r['hoja'] for r in resultados)),
+        'total_precios_encontrados': len(precios),
+        'precio_minimo': min(precios),
+        'precio_maximo': max(precios),
+        'suma_total': sum(precios),
+        'promedio': sum(precios) / len(precios),
+        'primer_hoja': resultados[0]['hoja'] if resultados else '',
+        'ultima_hoja': resultados[-1]['hoja'] if resultados else ''
+    }
 
 # Función para obtener el top 10 de hoteles por precio
 def get_top_hotels(client, spreadsheet_id, num_sheets=10, top_type="min"):
@@ -396,26 +417,6 @@ def display_hotel_statistics(client, spreadsheet_id):
             st.subheader("📊 Distribución de Precios")
             price_df = pd.DataFrame({'Precio': all_prices})
             st.histogram(price_df, x='Precio', nbins=20)
-            
-def calculate_hotel_metrics(resultados):
-    if not resultados:
-        return None
-    
-    precios = [r['precio'] for r in resultados if r['precio'] > 0]
-    
-    if not precios:
-        return None
-    
-    return {
-        'total_hojas_revisadas': len(set(r['hoja'] for r in resultados)),
-        'total_precios_encontrados': len(precios),
-        'precio_minimo': min(precios),
-        'precio_maximo': max(precios),
-        'suma_total': sum(precios),
-        'promedio': sum(precios) / len(precios),
-        'primer_hoja': resultados[0]['hoja'] if resultados else '',
-        'ultima_hoja': resultados[-1]['hoja'] if resultados else ''
-    }
 
 # Selector de ubicación en el sidebar
 st.sidebar.header("📍 Selecciona Ubicación")
@@ -436,7 +437,7 @@ hotel_busqueda = st.text_input(
 
 if hotel_busqueda and client:
     with st.spinner(f"Buscando '{hotel_busqueda}' en los últimos 30 Dias..."):
-        resultados, precios_encontrados = search_hotel_in_sheets(client, spreadsheet_id, hotel_busqueda, 30)
+        resultados, precios_encontrados = search_hotel_in_sheets(client, spreadsheet_id, hotel_busqueda, 60)
     
     if resultados:
         metrics = calculate_hotel_metrics(resultados)
@@ -494,7 +495,6 @@ if hotel_busqueda and client:
 # Sección de análisis de hojas individuales (código anterior)
 st.header("📊 Análisis de Hoja Individual")
 
-# Sección de Top 10 Hoteles
 if client:
     with st.spinner("Cargando hojas disponibles..."):
         sheets_dict = get_all_sheets(spreadsheet_id, client)
@@ -556,6 +556,15 @@ if client:
     else:
         st.error("No se pudieron cargar las hojas.")
 
+# Sección de Top 10 Hoteles
+st.markdown("---")
+if client:
+    display_top_hotels(client, spreadsheet_id, ubicacion)
+    
+    # Opcional: Estadísticas generales
+    with st.expander("📈 Ver Estadísticas Generales Detalladas"):
+        display_hotel_statistics(client, spreadsheet_id)
+
 # Información adicional
 st.sidebar.header("ℹ️ Información")
 st.sidebar.info("""
@@ -563,6 +572,11 @@ st.sidebar.info("""
 - Busca en las últimas 30 hojas
 - Calcula precios mínimo, máximo y promedio
 - Muestra la evolución temporal
+
+**Top 10 Hoteles:**
+- Muestra los 10 hoteles más económicos
+- Muestra los 10 hoteles más caros
+- Basado en las últimas 10 hojas
 """)
 
 # Pie de página
@@ -572,17 +586,3 @@ st.markdown(
     f"{datetime.now().strftime('%Y-%m-%d %H:%M')}</div>",
     unsafe_allow_html=True
 )
-
-
-
-
-
-
-
-
-
-
-
-
-
-
