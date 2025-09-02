@@ -569,14 +569,14 @@ if client:
 st.sidebar.header("ℹ️ Información")
 st.sidebar.info("""
 **Búsqueda de Hoteles:**
-- Busca en las últimas 30 hojas
+- Busca en los últimos 30 Dias 
 - Calcula precios mínimo, máximo y promedio
 - Muestra la evolución temporal
 
 **Top 10 Hoteles:**
 - Muestra los 10 hoteles más económicos
 - Muestra los 10 hoteles más caros
-- Basado en las últimas 10 hojas
+- Basado en los últimos 30 Dias
 """)
 
 # Pie de página
@@ -586,3 +586,4 @@ st.markdown(
     f"{datetime.now().strftime('%Y-%m-%d %H:%M')}</div>",
     unsafe_allow_html=True
 )
+
