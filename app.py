@@ -21,7 +21,7 @@ st.title("🏨 Sistema de Análisis de Precios de Hoteles")
 SHEET_IDS = {
     "Mérida": "13tPaaJCX4o4HkxrRdPiuc5NDP3XhrJuvKdq83Eh7-KU",
     "Madrid": "16DyY1PtkBTWMVd3Yj4cxA77X9En5GM5HGNZlF95wJBI",
-    "Tuxtla": "1Stux8hR4IlZ879gL7TRbz3uKzputDVwR362VINUr5Ho"
+    "Mazatlan": "1-3vPaXamO4m6pNXIsPAO0ttrvnJmx9a9yAVhtY8_2Lk"
 }
 
 # Configuración para acceso a Google Sheets usando Secrets
@@ -420,7 +420,7 @@ def display_hotel_statistics(client, spreadsheet_id):
 
 # Selector de ubicación en el sidebar
 st.sidebar.header("📍 Selecciona Ubicación")
-ubicacion = st.sidebar.radio("Ubicación:", ["Mérida", "Madrid", "Tuxtla"], index=0)
+ubicacion = st.sidebar.radio("Ubicación:", ["Mérida", "Madrid", "Mazatlan"], index=0)
 
 spreadsheet_id = SHEET_IDS[ubicacion]
 
@@ -586,4 +586,5 @@ st.markdown(
     f"{datetime.now().strftime('%Y-%m-%d %H:%M')}</div>",
     unsafe_allow_html=True
 )
+
 
