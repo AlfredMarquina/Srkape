@@ -19,7 +19,7 @@ st.title("🏨 Sistema de Análisis de Precios de Hoteles")
 
 # IDs de las hojas de cálculo
 SHEET_IDS = {
-    "Mérida": "13tPaaJCX4o4HkxrRdPiuc5NDP3XhrJuvKdq83Eh7-KU",
+    "Mérida": "1PaXhiLHAWL0yWG0F_qKimsbaOu3W0c7WM_xN8Uslrjo",
     "Madrid": "16DyY1PtkBTWMVd3Yj4cxA77X9En5GM5HGNZlF95wJBI",
     "Mazatlan": "1-3vPaXamO4m6pNXIsPAO0ttrvnJmx9a9yAVhtY8_2Lk"
 }
@@ -586,5 +586,6 @@ st.markdown(
     f"{datetime.now().strftime('%Y-%m-%d %H:%M')}</div>",
     unsafe_allow_html=True
 )
+
 
 
