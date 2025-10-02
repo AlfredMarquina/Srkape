@@ -20,7 +20,8 @@ st.title("🏨 Sistema de Análisis de Precios de Hoteles")
 # IDs de las hojas de cálculo
 SHEET_IDS = {
     "Mérida": "1PaXhiLHAWL0yWG0F_qKimsbaOu3W0c7WM_xN8Uslrjo",
-    "Madrid": "16DyY1PtkBTWMVd3Yj4cxA77X9En5GM5HGNZlF95wJBI",
+    "Madrid": "codigo aqui",
+    "Tuxtla": "codigo aqui",
     "Mazatlan": "1-3vPaXamO4m6pNXIsPAO0ttrvnJmx9a9yAVhtY8_2Lk"
 }
 
@@ -420,7 +421,7 @@ def display_hotel_statistics(client, spreadsheet_id):
 
 # Selector de ubicación en el sidebar
 st.sidebar.header("📍 Selecciona Ubicación")
-ubicacion = st.sidebar.radio("Ubicación:", ["Mérida", "Madrid", "Mazatlan"], index=0)
+ubicacion = st.sidebar.radio("Ubicación:", ["Mérida", "Madrid", "Tuxtla", "Mazatlan"], index=0)
 
 spreadsheet_id = SHEET_IDS[ubicacion]
 
@@ -586,6 +587,7 @@ st.markdown(
     f"{datetime.now().strftime('%Y-%m-%d %H:%M')}</div>",
     unsafe_allow_html=True
 )
+
 
 
 
